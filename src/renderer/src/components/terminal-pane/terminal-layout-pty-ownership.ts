@@ -1,4 +1,5 @@
-import type { TerminalLayoutSnapshot, TerminalPaneLayoutNode } from '../../../../shared/types'
+import type { TerminalLayoutSnapshot } from '../../../../shared/terminal-tab-types'
+import type { TerminalPaneLayoutNode } from '../../../../shared/terminal-tab-types'
 
 type TerminalLayoutPtyOwnershipNormalization = {
   snapshot: TerminalLayoutSnapshot

@@ -1,10 +1,8 @@
 import React, { useCallback, useEffect, useRef } from 'react'
 import { GitPullRequestArrow, Loader2, Search, X } from 'lucide-react'
-import type {
-  GitBranchCompareSummary,
-  GitUpstreamStatus,
-  SourceControlViewMode
-} from '../../../../shared/types'
+import type { GitBranchCompareSummary } from '../../../../shared/git-diff-compare-types'
+import type { GitUpstreamStatus } from '../../../../shared/git-status-types'
+import type { SourceControlViewMode } from '../../../../shared/ui-chrome-types'
 import type { GitBranchLineTotal } from '../../../../shared/git-status-types'
 import type { HostedReviewInfo } from '../../../../shared/hosted-review'
 import type { PrimaryAction } from './source-control-primary-action'
