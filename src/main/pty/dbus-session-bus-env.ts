@@ -1,33 +1,33 @@
-import { existsSync } from 'node:fs'
+import {
+  CANONICAL_USER_RUNTIME_DIR,
+  resolveUserRuntimeDir
+} from '../daemon/daemon-cgroup-scope'
 
 const DISABLED_SESSION_BUS_ADDRESS = 'disabled:'
 
-export type SessionBusRepairOverrides = {
-  uid?: number
-  socketExists?: (path: string) => boolean
-}
-
-function userBusSocketPath(uid: number | undefined): string | null {
-  if (uid === undefined) {
-    return null
-  }
-  return `/run/user/${uid}/bus`
-}
-
+/**
+ * Chromium sets `DBUS_SESSION_BUS_ADDRESS=disabled:` when it starts without a session bus, and
+ * service hardening can set the same marker. Headless serve then passes it into the daemon and
+ * every shell or agent it spawns, so `systemctl --user` and `systemd-run --user` fail with
+ * "Connection refused" although the user bus is healthy.
+ *
+ * Only the exact marker is changed. It becomes the address of the bus that
+ * `resolveUserRuntimeDir` finds (the per-UID runtime dir first, then `XDG_RUNTIME_DIR`), the
+ * same resolution the durable daemon scope uses. When no bus is reachable, the env stays as it
+ * is. An explicit address, not a deleted variable, because shells can carry an
+ * `XDG_RUNTIME_DIR` that points at a private dir with no bus in it.
+ */
 export function repairDisabledSessionBusEnv(
   env: Record<string, string | undefined>,
-  overrides?: SessionBusRepairOverrides
+  platform: NodeJS.Platform = process.platform,
+  canonicalRuntimeDir: string | null = CANONICAL_USER_RUNTIME_DIR
 ): void {
-  const busAddress = env.DBUS_SESSION_BUS_ADDRESS
-  if (process.platform !== 'linux' || busAddress !== DISABLED_SESSION_BUS_ADDRESS) {
+  if (platform !== 'linux' || env.DBUS_SESSION_BUS_ADDRESS !== DISABLED_SESSION_BUS_ADDRESS) {
     return
   }
-  const socketPath = userBusSocketPath(overrides?.uid ?? process.getuid?.())
-  const socketExists = overrides?.socketExists ?? existsSync
-  if (!socketPath || !socketExists(socketPath)) {
+  const runtimeDir = resolveUserRuntimeDir(env, canonicalRuntimeDir)
+  if (!runtimeDir) {
     return
   }
-  // Why: Chromium marks the bus disabled when none is set at launch, and headless
-  // serve inherits that marker into every spawned shell, breaking user-bus tools.
-  env.DBUS_SESSION_BUS_ADDRESS = `unix:path=${socketPath}`
+  env.DBUS_SESSION_BUS_ADDRESS = `unix:path=${runtimeDir}/bus`
 }

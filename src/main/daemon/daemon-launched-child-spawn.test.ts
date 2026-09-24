@@ -8,6 +8,13 @@ vi.mock('../../shared/app-environment', () => ({
   getAppEnvironment: () => ({ getVersion: () => '1.0.0' })
 }))
 vi.mock('./daemon-launch-paths', () => ({ daemonLogArgs: () => [] }))
+vi.mock('../pty/dbus-session-bus-env', () => ({
+  repairDisabledSessionBusEnv: (env: Record<string, string | undefined>) => {
+    if (env.DBUS_SESSION_BUS_ADDRESS === 'disabled:') {
+      env.DBUS_SESSION_BUS_ADDRESS = 'unix:path=/run/user/1000/bus'
+    }
+  }
+}))
 
 const options = {
   entryPath: '/app/daemon-entry.js',
@@ -20,7 +27,10 @@ const options = {
   macosLoginSessionWatch: false
 }
 
-afterEach(() => vi.clearAllMocks())
+afterEach(() => {
+  vi.clearAllMocks()
+  vi.unstubAllEnvs()
+})
 
 describe('daemon launch scope ownership', () => {
   it('only arms lifetime cleanup through the private scope launcher', () => {
@@ -48,4 +58,24 @@ describe('daemon launch scope ownership', () => {
       })
     )
   })
+})
+
+describe('daemon launch session bus', () => {
+  it.each([true, false])(
+    'hands the repaired bus address to the daemon (scoped launch: %s)',
+    (useDurableScope) => {
+      vi.stubEnv('DBUS_SESSION_BUS_ADDRESS', 'disabled:')
+
+      spawnDaemonChildProcess(options, useDurableScope)
+
+      const launch = useDurableScope ? spawn : fork
+      expect(launch).toHaveBeenCalledWith(
+        expect.objectContaining({
+          env: expect.objectContaining({
+            DBUS_SESSION_BUS_ADDRESS: 'unix:path=/run/user/1000/bus'
+          })
+        })
+      )
+    }
+  )
 })
