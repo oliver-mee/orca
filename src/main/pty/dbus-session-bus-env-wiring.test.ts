@@ -6,16 +6,21 @@ import {
 } from '../providers/local-pty-launch-plan'
 import { buildLocalPtySpawnEnvironment } from '../providers/local-pty-spawn-environment'
 
-const REPAIRED = 'unix:path=/run/user/1000/bus'
+const { REPAIRED, repairSessionBusEnv } = vi.hoisted(() => {
+  const repairedAddress = 'unix:path=/run/user/1000/bus'
+  /** Apply a fixed address so wiring tests isolate call sites from socket lookup. */
+  const repairSessionBusEnv = (env: Record<string, string | undefined>) => {
+    if (env.DBUS_SESSION_BUS_ADDRESS === 'disabled:') {
+      env.DBUS_SESSION_BUS_ADDRESS = repairedAddress
+    }
+  }
+  return { REPAIRED: repairedAddress, repairSessionBusEnv }
+})
 
 // Why: the helper itself is covered against real sockets in dbus-session-bus-env.test.ts. Here a
 // stand-in proves each spawn path calls it on the final env, so removing a call fails a test.
 vi.mock('./dbus-session-bus-env', () => ({
-  repairDisabledSessionBusEnv: (env: Record<string, string | undefined>) => {
-    if (env.DBUS_SESSION_BUS_ADDRESS === 'disabled:') {
-      env.DBUS_SESSION_BUS_ADDRESS = REPAIRED
-    }
-  }
+  repairDisabledSessionBusEnv: repairSessionBusEnv
 }))
 
 vi.mock('../providers/local-pty-utils', () => ({

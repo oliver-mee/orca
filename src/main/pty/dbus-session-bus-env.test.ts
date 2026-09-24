@@ -8,6 +8,7 @@ import { repairDisabledSessionBusEnv } from './dbus-session-bus-env'
 const servers: Server[] = []
 const dirs: string[] = []
 
+/** Create a private runtime directory with a listening Unix-domain socket at `bus`. */
 function runtimeDirWithBus(): string {
   const dir = mkdtempSync(join(tmpdir(), 'xdg-runtime-with-bus-'))
   const server = createServer()
@@ -17,6 +18,7 @@ function runtimeDirWithBus(): string {
   return dir
 }
 
+/** Create a private runtime directory without a bus socket. */
 function runtimeDirWithoutBus(): string {
   const dir = mkdtempSync(join(tmpdir(), 'xdg-runtime-no-bus-'))
   dirs.push(dir)
@@ -33,38 +35,47 @@ afterEach(() => {
 })
 
 describe('repairDisabledSessionBusEnv', () => {
-  it('replaces the disabled marker with the per-UID user bus', () => {
-    const perUidDir = runtimeDirWithBus()
-    const env: Record<string, string | undefined> = { DBUS_SESSION_BUS_ADDRESS: 'disabled:' }
+  it.skipIf(process.platform === 'win32')(
+    'replaces the disabled marker with the per-UID user bus',
+    () => {
+      const perUidDir = runtimeDirWithBus()
+      const env: Record<string, string | undefined> = { DBUS_SESSION_BUS_ADDRESS: 'disabled:' }
 
-    repairDisabledSessionBusEnv(env, 'linux', perUidDir)
+      repairDisabledSessionBusEnv(env, 'linux', perUidDir)
 
-    expect(env.DBUS_SESSION_BUS_ADDRESS).toBe(`unix:path=${perUidDir}/bus`)
-  })
-
-  it('prefers the per-UID bus over a hardened XDG_RUNTIME_DIR without a bus', () => {
-    const perUidDir = runtimeDirWithBus()
-    const env: Record<string, string | undefined> = {
-      DBUS_SESSION_BUS_ADDRESS: 'disabled:',
-      XDG_RUNTIME_DIR: runtimeDirWithoutBus()
+      expect(env.DBUS_SESSION_BUS_ADDRESS).toBe(`unix:path=${perUidDir}/bus`)
     }
+  )
 
-    repairDisabledSessionBusEnv(env, 'linux', perUidDir)
+  it.skipIf(process.platform === 'win32')(
+    'prefers the per-UID bus over a hardened XDG_RUNTIME_DIR without a bus',
+    () => {
+      const perUidDir = runtimeDirWithBus()
+      const env: Record<string, string | undefined> = {
+        DBUS_SESSION_BUS_ADDRESS: 'disabled:',
+        XDG_RUNTIME_DIR: runtimeDirWithoutBus()
+      }
 
-    expect(env.DBUS_SESSION_BUS_ADDRESS).toBe(`unix:path=${perUidDir}/bus`)
-  })
+      repairDisabledSessionBusEnv(env, 'linux', perUidDir)
 
-  it('falls back to XDG_RUNTIME_DIR when there is no per-UID bus', () => {
-    const xdgDir = runtimeDirWithBus()
-    const env: Record<string, string | undefined> = {
-      DBUS_SESSION_BUS_ADDRESS: 'disabled:',
-      XDG_RUNTIME_DIR: xdgDir
+      expect(env.DBUS_SESSION_BUS_ADDRESS).toBe(`unix:path=${perUidDir}/bus`)
     }
+  )
 
-    repairDisabledSessionBusEnv(env, 'linux', runtimeDirWithoutBus())
+  it.skipIf(process.platform === 'win32')(
+    'falls back to XDG_RUNTIME_DIR when there is no per-UID bus',
+    () => {
+      const xdgDir = runtimeDirWithBus()
+      const env: Record<string, string | undefined> = {
+        DBUS_SESSION_BUS_ADDRESS: 'disabled:',
+        XDG_RUNTIME_DIR: xdgDir
+      }
 
-    expect(env.DBUS_SESSION_BUS_ADDRESS).toBe(`unix:path=${xdgDir}/bus`)
-  })
+      repairDisabledSessionBusEnv(env, 'linux', runtimeDirWithoutBus())
+
+      expect(env.DBUS_SESSION_BUS_ADDRESS).toBe(`unix:path=${xdgDir}/bus`)
+    }
+  )
 
   it('leaves the marker when no reachable bus exists', () => {
     const env: Record<string, string | undefined> = { DBUS_SESSION_BUS_ADDRESS: 'disabled:' }
@@ -85,7 +96,7 @@ describe('repairDisabledSessionBusEnv', () => {
   })
 
   it('leaves a real bus address and an absent address untouched', () => {
-    const perUidDir = runtimeDirWithBus()
+    const perUidDir = runtimeDirWithoutBus()
     const withAddress: Record<string, string | undefined> = {
       DBUS_SESSION_BUS_ADDRESS: 'unix:path=/run/user/1000/bus'
     }
@@ -101,7 +112,7 @@ describe('repairDisabledSessionBusEnv', () => {
   it('does nothing off Linux', () => {
     const env: Record<string, string | undefined> = { DBUS_SESSION_BUS_ADDRESS: 'disabled:' }
 
-    repairDisabledSessionBusEnv(env, 'darwin', runtimeDirWithBus())
+    repairDisabledSessionBusEnv(env, 'darwin', runtimeDirWithoutBus())
 
     expect(env.DBUS_SESSION_BUS_ADDRESS).toBe('disabled:')
   })

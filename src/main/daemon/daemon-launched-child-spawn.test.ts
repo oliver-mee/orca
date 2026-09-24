@@ -1,7 +1,15 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { spawnDaemonChildProcess } from './daemon-launched-child-spawn'
 
-const { spawn, fork } = vi.hoisted(() => ({ spawn: vi.fn(), fork: vi.fn() }))
+const { spawn, fork, repairSessionBusEnv } = vi.hoisted(() => {
+  /** Apply a fixed address so launch tests isolate env forwarding from socket lookup. */
+  const repairSessionBusEnv = vi.fn((env: Record<string, string | undefined>) => {
+    if (env.DBUS_SESSION_BUS_ADDRESS === 'disabled:') {
+      env.DBUS_SESSION_BUS_ADDRESS = 'unix:path=/run/user/1000/bus'
+    }
+  })
+  return { spawn: vi.fn(), fork: vi.fn(), repairSessionBusEnv }
+})
 vi.mock('../../shared/child-process/run-process', () => ({ spawnProcess: spawn }))
 vi.mock('../../shared/child-process/fork-process', () => ({ forkProcess: fork }))
 vi.mock('../../shared/app-environment', () => ({
@@ -9,11 +17,7 @@ vi.mock('../../shared/app-environment', () => ({
 }))
 vi.mock('./daemon-launch-paths', () => ({ daemonLogArgs: () => [] }))
 vi.mock('../pty/dbus-session-bus-env', () => ({
-  repairDisabledSessionBusEnv: (env: Record<string, string | undefined>) => {
-    if (env.DBUS_SESSION_BUS_ADDRESS === 'disabled:') {
-      env.DBUS_SESSION_BUS_ADDRESS = 'unix:path=/run/user/1000/bus'
-    }
-  }
+  repairDisabledSessionBusEnv: repairSessionBusEnv
 }))
 
 const options = {
