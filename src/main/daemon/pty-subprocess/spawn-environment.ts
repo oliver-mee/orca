@@ -136,6 +136,7 @@ function removeInheritedDevAgentHookEndpoint(
   }
 }
 
+/** Build the environment inherited by PTYs launched from the terminal daemon. */
 export function createDaemonPtyEnvironment(opts: PtySubprocessOptions): Record<string, string> {
   const env: Record<string, string> = {
     ...mergeGitConfigEnvProtocol(stripInheritedBuildModeEnv(process.env), opts.env),

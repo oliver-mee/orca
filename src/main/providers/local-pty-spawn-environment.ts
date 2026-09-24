@@ -14,6 +14,7 @@ import type { LocalPtyProviderOptions } from './local-pty-provider-types'
 import { awaitCancelableLocalPtySpawn } from './local-pty-spawn-state'
 import type { PtySpawnOptions } from './types'
 
+/** Build the environment for a PTY launched by the local provider. */
 export function buildLocalPtySpawnEnvironment(args: {
   id: string
   spawn: PtySpawnOptions
