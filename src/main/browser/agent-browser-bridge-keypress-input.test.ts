@@ -92,6 +92,7 @@ describe('AgentBrowserBridge keypress input', () => {
     webContentsFromIdMock.mockImplementation((id: number) => (id === 100 ? wc : null))
   })
 
+  /** Models two workspaces with the unrelated page globally active. */
   function twoPageTargets() {
     const target = mockWebContents(1)
     const unrelated = mockWebContents(2)
@@ -130,6 +131,14 @@ describe('AgentBrowserBridge keypress input', () => {
     await routed.keypress('a', undefined, 'target')
     expect(keyEventCalls(target)).toHaveLength(2)
     expect(keyEventCalls(unrelated)).toHaveLength(0)
+  })
+
+  it('routes a keypress to the specified worktree when no page is given', async () => {
+    const { routed, target, unrelated } = twoPageTargets()
+    await routed.keypress('a', 'wt-a')
+    expect(keyEventCalls(target)).toHaveLength(2)
+    expect(keyEventCalls(unrelated)).toHaveLength(0)
+    expect(execFileMock).not.toHaveBeenCalled()
   })
 
   it('rejects a page from another worktree without falling back to the active page', async () => {
