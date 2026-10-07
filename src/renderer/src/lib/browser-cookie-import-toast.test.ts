@@ -158,6 +158,50 @@ describe('emitBrowserCookieImportToast', () => {
     )
   })
 
+  it('explains preserved sibling cookies instead of calling all of them unreadable', () => {
+    emitBrowserCookieImportToast(
+      {
+        ...summary,
+        importedCookies: 1,
+        skippedCookies: 2,
+        partitionSkippedCookies: 2,
+        partitionSkipBreakdown: {
+          unreadableCookies: 1,
+          preservedRelatedCookies: 1,
+          domains: ['example.com'],
+          reasons: [{ reason: 'missing ancestor', count: 1 }]
+        }
+      },
+      'Imported 1 cookie.',
+      remoteExecution
+    )
+    expect(warningToastMock).toHaveBeenCalledWith(
+      '1 cookies had unreadable site partitions; 1 related cookies were left unimported to protect existing sessions. Existing cookies for these sites were left unchanged. Check these sites in this profile before signing in again.',
+      { duration: 12000 }
+    )
+  })
+
+  it('falls back to the legacy warning when breakdown counts disagree', () => {
+    emitBrowserCookieImportToast(
+      {
+        ...summary,
+        partitionSkippedCookies: 2,
+        partitionSkipBreakdown: {
+          unreadableCookies: 1,
+          preservedRelatedCookies: 2,
+          domains: [],
+          reasons: []
+        }
+      },
+      'Imported 1 cookie.',
+      localExecution
+    )
+    expect(warningToastMock).toHaveBeenCalledWith(
+      '2 cookies were not imported because their site-partition could not be read. Sign in to those sites again in Orca.',
+      { duration: 12000 }
+    )
+  })
+
   it('does not infer a Google warning from generic skipped cookies', () => {
     emitBrowserCookieImportToast(
       { ...summary, importedCookies: 2, skippedCookies: 1 },

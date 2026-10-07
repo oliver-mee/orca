@@ -1,3 +1,4 @@
+import { summarizePartitionSkips } from './browser-cookie-partition-summary'
 import type {
   BrowserCookieImportResult,
   BrowserCookieImportSummary
@@ -31,7 +32,10 @@ export async function finalizeChromiumCookieImport(
         // Why: partition skips are a breakdown of skippedCookies, never an addition to it, so
         // totalCookies === importedCookies + skippedCookies keeps holding on this path too.
         ...(context.partitionSkipped > 0
-          ? { partitionSkippedCookies: context.partitionSkipped }
+          ? {
+              partitionSkippedCookies: context.partitionSkipped,
+              partitionSkipBreakdown: summarizePartitionSkips(context.nativePlan.skips)
+            }
           : {}),
         domains: [],
         // Why: a profile whose rows cannot be decrypted returns here, and without this it is
@@ -158,7 +162,12 @@ export async function finalizeChromiumCookieImport(
     ...(context.googleCookiesSkipped > 0
       ? { googleCookiesSkipped: context.googleCookiesSkipped }
       : {}),
-    ...(context.partitionSkipped > 0 ? { partitionSkippedCookies: context.partitionSkipped } : {}),
+    ...(context.partitionSkipped > 0
+      ? {
+          partitionSkippedCookies: context.partitionSkipped,
+          partitionSkipBreakdown: summarizePartitionSkips(context.nativePlan.skips)
+        }
+      : {}),
     domains: [...context.domainSet].sort(),
     ...(warning ? { warning } : {})
   }
