@@ -11,6 +11,7 @@ import { deriveUrl } from './browser-cookie-validation'
 import { diag } from './browser-cookie-import-diagnostics'
 import type { ChromiumImportContext } from './browser-cookie-chromium-types'
 
+/** Finalizes staged Chromium writes and reports planner skips without changing import policy. */
 export async function finalizeChromiumCookieImport(
   context: ChromiumImportContext
 ): Promise<BrowserCookieImportResult> {

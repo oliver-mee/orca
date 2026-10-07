@@ -64,6 +64,7 @@ export function cookieImportTarget(targetPartition: string): CookieImportTarget 
   }
 }
 
+/** Imports validated rows through the safe family write plan and summarizes its outcomes. */
 export async function importValidatedCookies(
   cookies: ValidatedCookie[],
   totalInput: number,
