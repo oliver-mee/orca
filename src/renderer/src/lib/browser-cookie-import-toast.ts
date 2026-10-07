@@ -167,7 +167,7 @@ function emitPartitionSkippedImportWarning(summary: BrowserCookieImportSummary):
     toast.warning(
       translate(
         'auto.lib.browser.cookie.import.toast.partitionSkippedBreakdown',
-        '{{value0}} cookies had unreadable site partitions; {{value1}} related cookies were left unimported to protect existing sessions. Existing cookies for these sites were left unchanged. Check these sites in this profile before signing in again.',
+        'Cookies with unreadable site partitions: {{value0}}. Related cookies left unimported to protect existing sessions: {{value1}}. Existing cookies for these sites were left unchanged. Check these sites in this profile before signing in again.',
         { value0: breakdown.unreadableCookies, value1: breakdown.preservedRelatedCookies }
       ),
       { duration: 12000 }

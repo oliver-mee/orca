@@ -176,7 +176,7 @@ describe('emitBrowserCookieImportToast', () => {
       remoteExecution
     )
     expect(warningToastMock).toHaveBeenCalledWith(
-      '1 cookies had unreadable site partitions; 1 related cookies were left unimported to protect existing sessions. Existing cookies for these sites were left unchanged. Check these sites in this profile before signing in again.',
+      'Cookies with unreadable site partitions: 1. Related cookies left unimported to protect existing sessions: 1. Existing cookies for these sites were left unchanged. Check these sites in this profile before signing in again.',
       { duration: 12000 }
     )
   })
