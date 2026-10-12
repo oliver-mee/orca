@@ -176,6 +176,8 @@ export function createWebUiApi(): NonNullable<Partial<PreloadApi>['ui']> {
     readClipboardFilePaths: async () => [],
     // Why empty: a browser has no local paste folder, so restored pastes stay to attach again.
     restoreNativeChatPastes: async () => [],
+    // Why: browsers expose no Finder file URL, so text-first paste stays correct.
+    saveCopiedClipboardImageFileAsTempFile: async () => null,
     readClipboardImageThumbnail: () => readClipboardImageThumbnail().catch(() => null),
     writeClipboardText: writeWebClipboardText,
     writeTerminalClipboardText: writeWebClipboardText,

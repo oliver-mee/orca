@@ -42,6 +42,7 @@ import { uploadPastedImageToAgentSessionAttachments } from '../ipc/agent-session
 import { readWindowsClipboardImageFileAsPng } from './clipboard-windows-image-file'
 import { readClipboardImageSource } from './clipboard-image-source'
 import { readClipboardCopiedFilePaths } from './clipboard-copied-file-paths'
+import { registerMacCopiedImageClipboardHandler } from './clipboard-mac-image-file-ipc'
 import { buildClipboardImageThumbnail } from './clipboard-image-thumbnail'
 import { writeClipboardTextAndVerify } from './clipboard-text-write-verify'
 import { isDashboardPopoutRenderer } from './dashboard-popout-window'
@@ -109,6 +110,7 @@ export function registerClipboardHandlers(store: Store): void {
   ipcMain.removeHandler('clipboard:writeImage')
   ipcMain.removeHandler('clipboard:writeFile')
   ipcMain.removeHandler('clipboard:saveImageAsTempFile')
+  ipcMain.removeHandler('clipboard:saveCopiedImageFileAsTempFile')
   ipcMain.removeHandler('clipboard:readImageThumbnail')
   ipcMain.removeHandler('clipboard:hasImage')
   ipcMain.removeHandler('clipboard:readFilePaths')
@@ -174,6 +176,11 @@ export function registerClipboardHandlers(store: Store): void {
       return saveClipboardImageBufferForTarget(image.toPNG(), args)
     }
   )
+  registerMacCopiedImageClipboardHandler({
+    assertTextSender: assertTrustedClipboardTextSender,
+    isTrustedRenderer: isTrustedClipboardRenderer,
+    saveImageForTarget: saveClipboardImageBufferForTarget
+  })
   // Why: copy the actual file to the OS clipboard so pasting in Finder/Explorer
   // drops the file itself, not its path as text.
   ipcMain.handle(
