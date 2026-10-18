@@ -1,5 +1,6 @@
 import { expect, test } from './helpers/orca-app'
 import { launchHeadlessPairedRuntimeHost } from './helpers/headless-paired-runtime-host'
+import { createBrowserAnnotationReceiver } from './helpers/browser-annotation-receiver'
 import {
   launchPairedElectronClient,
   type PairedElectronClient
@@ -21,6 +22,7 @@ test('annotates an element of a client-hosted browser page', async ({ testRepoPa
   })
   const host = await launchHeadlessPairedRuntimeHost()
   let client: PairedElectronClient | null = null
+  let receiver: Awaited<ReturnType<typeof createBrowserAnnotationReceiver>> | null = null
   try {
     await host.client.call('repo.add', { path: testRepoPath, kind: 'git' })
     await host.client.call('terminal.create', {
@@ -44,6 +46,7 @@ test('annotates an element of a client-hosted browser page', async ({ testRepoPa
       await client.page.waitForTimeout(300)
     }
     await expect(gotIt).toHaveCount(0)
+    await client.page.screenshot({ path: testInfo.outputPath('default-viewport.png') })
 
     const menu = client.page.getByRole('button', { name: 'Browser menu', exact: true })
     await menu.click()
@@ -82,6 +85,7 @@ test('annotates an element of a client-hosted browser page', async ({ testRepoPa
         }, fixture.origin)
       )
       .toBeGreaterThan(375)
+    await client.page.screenshot({ path: testInfo.outputPath('reset-viewport.png') })
 
     const annotate = client.page.getByRole('button', { name: 'Annotate page element', exact: true })
     await expect(client.page.getByRole('button', { name: 'Grab page element' })).toBeEnabled()
@@ -156,9 +160,29 @@ test('annotates an element of a client-hosted browser page', async ({ testRepoPa
       body: await client.page.screenshot({ path: testInfo.outputPath('annotation-tray.png') }),
       contentType: 'image/png'
     })
+    receiver = await createBrowserAnnotationReceiver(
+      host.userDataDir,
+      testRepoPath,
+      'Make the heading larger'
+    )
+    await client.page.getByRole('button', { name: 'Send', exact: true }).click()
+    const targetAgent = client.page.getByRole('menuitem').filter({ hasText: 'Codex Ready' })
+    await expect(targetAgent).toBeEnabled({ timeout: 30_000 })
+    await targetAgent.click()
+    await expect
+      .poll(() => receiver?.readReport(), { timeout: 15_000 })
+      .toMatchObject({
+        contractOk: true,
+        submitted: true,
+        markerReceived: true,
+        prematureEnters: 0
+      })
+    await expect(client.page.getByText('Make the heading larger', { exact: true })).toHaveCount(0)
   } finally {
+    console.log('annotation-receiver-diagnostic', JSON.stringify(receiver?.readReport()))
     await client?.dispose()
     await host.dispose()
+    receiver?.dispose()
     await fixture.close()
   }
 })

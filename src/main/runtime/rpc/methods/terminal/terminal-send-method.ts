@@ -136,8 +136,15 @@ export const TERMINAL_SEND_METHODS = [
       }
       const hasText = typeof params.text === 'string' && params.text.length > 0
       const hasSuffix = params.enter === true || params.interrupt === true
-      if (params.requireAgentStatus === 'sendable' && hasText && hasSuffix) {
-        // Why: guarded sends are two-phase; reject combined payload + submit so a guard flip can't cause partial delivery.
+      const guardedAgentSend = params.requireAgentStatus === 'sendable' && hasText && hasSuffix
+      const useSettledAgentPrompt =
+        params.agentPrompt === true &&
+        hasText &&
+        params.enter === true &&
+        params.interrupt !== true &&
+        params.client?.type === 'desktop' &&
+        (await runtime.isTerminalRunningSettledPromptAgent(params.terminal))
+      if (guardedAgentSend && !useSettledAgentPrompt) {
         return {
           send: {
             handle: params.terminal,
@@ -198,13 +205,6 @@ export const TERMINAL_SEND_METHODS = [
               markMutationEffectPossible?.()
             }
           : assertSendPreconditions
-      const useSettledAgentPrompt =
-        params.agentPrompt === true &&
-        hasText &&
-        params.enter === true &&
-        params.interrupt !== true &&
-        params.client?.type === 'desktop' &&
-        (await runtime.isTerminalRunningSettledPromptAgent(params.terminal))
       const reserveWrite =
         params.inputKind !== 'query-reply' && leaf?.ptyId && mobileFloorClientId
           ? (ptyId: string): void => {
