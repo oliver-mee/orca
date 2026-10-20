@@ -77,7 +77,10 @@ test('selects a host-owned profile through the client-hosted toolbar without mix
     })
     await expect(choice).toBeVisible()
     await testInfo.attach('profile-menu', {
-      body: await client.page.screenshot({ path: testInfo.outputPath('profile-menu.png') }),
+      body: await client.page.screenshot({
+        animations: 'disabled',
+        path: testInfo.outputPath('profile-menu.png')
+      }),
       contentType: 'image/png'
     })
     await choice.click()
@@ -90,7 +93,10 @@ test('selects a host-owned profile through the client-hosted toolbar without mix
       }, oldGuestId)
     ).toBe(true)
     await testInfo.attach('profile-confirmation', {
-      body: await client.page.screenshot({ path: testInfo.outputPath('profile-confirmation.png') }),
+      body: await client.page.screenshot({
+        animations: 'disabled',
+        path: testInfo.outputPath('profile-confirmation.png')
+      }),
       contentType: 'image/png'
     })
     await dialog.getByRole('button', { name: 'Switch', exact: true }).click()
@@ -118,7 +124,10 @@ test('selects a host-owned profile through the client-hosted toolbar without mix
       )
       .toMatchObject({ cookies: [] })
     await testInfo.attach('profile-switched', {
-      body: await client.page.screenshot({ path: testInfo.outputPath('profile-switched.png') }),
+      body: await client.page.screenshot({
+        animations: 'disabled',
+        path: testInfo.outputPath('profile-switched.png')
+      }),
       contentType: 'image/png'
     })
   } finally {
