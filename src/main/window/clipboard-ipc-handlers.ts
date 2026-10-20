@@ -1,4 +1,8 @@
 import {
+  makeClipboardFileDeps,
+  normalizeClipboardWriteFileRequest
+} from './clipboard-file-handler-deps'
+import {
   app,
   clipboard,
   ipcMain,
@@ -8,7 +12,6 @@ import {
 } from 'electron'
 import { randomUUID } from 'node:crypto'
 import { open, stat } from 'node:fs/promises'
-import { runProcess } from '@orca/process-host'
 import type { Store } from '../persistence'
 import { PATH_ACCESS_DENIED_MESSAGE } from '../ipc/filesystem-auth'
 import { resolveDesktopAuthorizedPath } from '../ipc/local-file-access-resolution'
@@ -28,11 +31,7 @@ import {
   assertClipboardImageDimensionsWithinLimit,
   type ClipboardImageThumbnail
 } from '../../shared/clipboard-image'
-import {
-  writeFileToClipboard,
-  type ClipboardFileDeps,
-  type ClipboardFileResult
-} from './clipboard-file-copy'
+import { writeFileToClipboard, type ClipboardFileResult } from './clipboard-file-copy'
 import { SshHostNotServedError } from '../providers/ssh-host-not-served-error'
 import {
   cleanupExpiredRemoteClipboardFiles,
@@ -53,11 +52,6 @@ import { agentSessionPastedImageName } from '../../shared/agent-session-attachme
 import type { AgentSessionAttachmentStore } from '../native-chat/agent-session-attachments/agent-session-attachment-store'
 
 let trustedClipboardRendererWebContentsId: number | null = null
-
-type ClipboardWriteFileRequest = {
-  filePath: string
-  connectionId?: string
-}
 
 export type ClipboardHandlerOptions = {
   /** This machine's chat attachment store, after starting its chat host; null when it can't. */
@@ -193,7 +187,8 @@ export function registerClipboardHandlers(
   registerMacCopiedImageClipboardHandler({
     assertTextSender: assertTrustedClipboardTextSender,
     isTrustedRenderer: isTrustedClipboardRenderer,
-    saveImageForTarget: saveClipboardImageBufferForTarget
+    saveImageForTarget: (buffer, args) =>
+      saveClipboardImageBufferForTarget(buffer, args, handlerOptions)
   })
   // Why: copy the actual file to the OS clipboard so pasting in Finder/Explorer
   // drops the file itself, not its path as text.
@@ -281,36 +276,6 @@ export function registerClipboardHandlers(
     }
     clipboard.writeImage(image)
   })
-}
-
-function normalizeClipboardWriteFileRequest(args: unknown): ClipboardWriteFileRequest | null {
-  if (typeof args === 'string') {
-    return { filePath: args }
-  }
-  if (!args || typeof args !== 'object' || Array.isArray(args)) {
-    return null
-  }
-  const filePath = (args as { filePath?: unknown }).filePath
-  if (typeof filePath !== 'string') {
-    return null
-  }
-  const connectionId = (args as { connectionId?: unknown }).connectionId
-  if (typeof connectionId === 'string' && connectionId.trim() !== '') {
-    return { filePath, connectionId }
-  }
-  return { filePath }
-}
-
-function makeClipboardFileDeps(
-  resolveFilePath: ClipboardFileDeps['resolveFilePath']
-): ClipboardFileDeps {
-  return {
-    platform: process.platform,
-    desktop: process.env.XDG_CURRENT_DESKTOP,
-    resolveFilePath,
-    writeBuffer: (format, buffer) => clipboard.writeBuffer(format, buffer),
-    runProcess
-  }
 }
 
 function assertTrustedClipboardSender(event: IpcMainInvokeEvent): void {
