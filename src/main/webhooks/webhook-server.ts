@@ -1,6 +1,7 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'http'
 import type {
   Automation,
+  AutomationRunStatus,
   AutomationWebhookDelivery,
   WebhookServerEndpoint
 } from '../../shared/automations-types'
@@ -27,7 +28,7 @@ export type WebhookServerDeps = {
   triggerWebhook: (
     automationId: string,
     delivery: AutomationWebhookDelivery
-  ) => Promise<unknown> | unknown
+  ) => Promise<{ status: AutomationRunStatus }> | { status: AutomationRunStatus }
 }
 
 function readBodyWithLimit(req: IncomingMessage): Promise<{ body: string; tooLarge: boolean }> {
@@ -227,7 +228,18 @@ export class WebhookServer {
       const contentType =
         typeof req.headers['content-type'] === 'string' ? req.headers['content-type'] : null
       const delivery = captureWebhookDelivery({ body, contentType, receivedAt: Date.now() })
-      await this.deps.triggerWebhook(automationId, delivery)
+      const run = await this.deps.triggerWebhook(automationId, delivery)
+      // A settled refusal is not accepted work, including when a window closes
+      // after the listener started. Let webhook senders retry unavailable dispatch.
+      if (
+        run.status === 'skipped_unavailable' ||
+        run.status === 'skipped_needs_interactive_auth' ||
+        run.status === 'dispatch_failed'
+      ) {
+        res.writeHead(503)
+        res.end()
+        return
+      }
 
       res.writeHead(202)
       res.end()

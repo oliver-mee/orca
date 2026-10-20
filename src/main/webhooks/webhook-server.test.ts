@@ -2,11 +2,15 @@ import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from 'vite
 import type {
   Automation,
   AutomationWebhookConfig,
-  AutomationWebhookDelivery
+  AutomationWebhookDelivery,
+  AutomationRunStatus
 } from '../../shared/automations-types'
 import { WebhookServer } from './webhook-server'
 
-type TriggerFn = (automationId: string, delivery: AutomationWebhookDelivery) => Promise<void>
+type TriggerFn = (
+  automationId: string,
+  delivery: AutomationWebhookDelivery
+) => Promise<{ status: AutomationRunStatus }>
 
 function makeAutomation(webhook: AutomationWebhookConfig | null): Automation {
   return {
@@ -43,7 +47,7 @@ describe('WebhookServer', () => {
   let base: string
 
   beforeEach(async () => {
-    triggerWebhook = vi.fn<TriggerFn>().mockResolvedValue(undefined)
+    triggerWebhook = vi.fn<TriggerFn>().mockResolvedValue({ status: 'dispatching' })
     automation = makeAutomation({ enabled: true, secretMode: 'none', secret: null })
     server = new WebhookServer({
       getAutomation: (id) => (id === automation?.id ? automation : undefined),
@@ -72,6 +76,33 @@ describe('WebhookServer', () => {
     expect(delivery.body).toBe('{"object_kind":"merge_request"}')
     expect(delivery.contentType).toBe('application/json')
   })
+
+  it.each(['skipped_unavailable', 'skipped_needs_interactive_auth', 'dispatch_failed'] as const)(
+    'returns retryable refusal when dispatch settles as %s',
+    async (status) => {
+      triggerWebhook.mockResolvedValue({ status })
+      const res = await fetch(`${base}/webhook/auto-1`, { method: 'POST', body: '{}' })
+      expect(res.status).toBe(503)
+      expect(triggerWebhook).toHaveBeenCalledTimes(1)
+    }
+  )
+
+  it('refuses delivery after a previously available dispatcher becomes unavailable', async () => {
+    const accepted = await fetch(`${base}/webhook/auto-1`, { method: 'POST', body: '{}' })
+    expect(accepted.status).toBe(202)
+    triggerWebhook.mockResolvedValue({ status: 'skipped_unavailable' })
+    const refused = await fetch(`${base}/webhook/auto-1`, { method: 'POST', body: '{}' })
+    expect(refused.status).toBe(503)
+  })
+
+  it.each(['dispatching', 'dispatched', 'completed', 'skipped_precheck'] as const)(
+    'accepts a run that legitimately settles as %s',
+    async (status) => {
+      triggerWebhook.mockResolvedValue({ status })
+      const res = await fetch(`${base}/webhook/auto-1`, { method: 'POST', body: '{}' })
+      expect(res.status).toBe(202)
+    }
+  )
 
   it('rejects non-POST methods with 405', async () => {
     const res = await fetch(`${base}/webhook/auto-1`, { method: 'GET' })
