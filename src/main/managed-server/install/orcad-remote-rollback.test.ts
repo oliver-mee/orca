@@ -1,14 +1,16 @@
-import type * as ExecCommandModule from '../../ssh/remote-exec-command'
+import type * as ExecCommandModule from '../../ssh/remote-exec/remote-exec-command'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type * as RecordFile from './orcad-remote-record-file'
 import type * as InstallLock from './remote-install-lock'
 import type * as TerminalBarrier from '../lifecycle/orcad-rollback-terminal-barrier'
 
-vi.mock('../../ssh/remote-exec-command', async (importOriginal) => ({
+vi.mock('../../ssh/remote-exec/remote-exec-command', async (importOriginal) => ({
   ...(await importOriginal<typeof ExecCommandModule>()),
   execCommand: vi.fn()
 }))
-vi.mock('../../ssh/ssh-connection-utils', () => ({ shellEscape: (s: string) => `'${s}'` }))
+vi.mock('../../../shared/shell-argument-quoting', () => ({
+  quotePosixShell: (s: string) => `'${s}'`
+}))
 vi.mock('./remote-install-transfers', () => ({
   writeRelayFile: vi.fn().mockResolvedValue(undefined),
   uploadRelayDirectory: vi.fn().mockResolvedValue(undefined)
@@ -52,7 +54,7 @@ vi.mock('../lifecycle/orcad-rollback-terminal-barrier', async (importOriginal) =
   }
 }))
 
-import { execCommand } from '../../ssh/remote-exec-command'
+import { execCommand } from '../../ssh/remote-exec/remote-exec-command'
 import { writeAtomicOrcadRemoteRecord } from './orcad-remote-record-file'
 import { rollbackOrcad, type OrcadRollbackOptions } from './orcad-remote-rollback'
 import {

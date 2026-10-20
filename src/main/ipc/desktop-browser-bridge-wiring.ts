@@ -5,6 +5,7 @@
 import { randomUUID } from 'node:crypto'
 import { webContents, type BrowserWindow } from 'electron'
 import {
+  DESKTOP_BROWSER_BRIDGE_CANCEL_CAPABILITY,
   DESKTOP_BROWSER_BRIDGE_RUNTIME_CAPABILITY,
   isDesktopBrowserBridgeMethod
 } from '../../shared/desktop-browser-bridge-protocol'
@@ -31,13 +32,13 @@ import type { OrcaRuntimeService } from '../runtime/orca-runtime'
 import { RpcDispatcher } from '../runtime/rpc/dispatcher'
 import { ALL_RPC_METHODS } from '../runtime/rpc/methods'
 import { ensureOrcadManagedTunnel } from '../managed-server/lifecycle/orcad-managed-tunnel'
-import { getSshTargetRegistryStore } from '../ssh/ssh-target-registry'
-import type { SshConnectionManager } from '../ssh/ssh-connection-manager'
-import { getRuntimeEnvironmentStatus } from './runtime-environment-status-probe'
-import { isRuntimeEnvironmentManuallyDisconnected } from './runtime-environment-connectivity-handlers'
+import { getSshTargetRegistryStore } from '../ssh/targets/ssh-target-registry'
+import type { SshConnectionManager } from '../ssh/connection/ssh-connection-manager'
+import { getRuntimeEnvironmentStatus } from './runtime-environments/runtime-environment-status-probe'
+import { isRuntimeEnvironmentManuallyDisconnected } from './runtime-environments/runtime-environment-connectivity-handlers'
 import { setDesktopBrowserBridgeControl } from './desktop-browser-bridge-reconcile'
 import { markRemoteCliDrivenWorkspace } from '../browser/desktop-browser-bridge/remote-cli-driven-workspaces'
-import { persistedStore } from './ssh-ipc-context'
+import { persistedStore } from './ssh/ssh-ipc-context'
 import { localSshBrowserTargetIdForSession } from '../browser/local-ssh-browser-partitions'
 
 const ATTACH_TIMEOUT_MS = 15_000
@@ -135,12 +136,13 @@ export function installDesktopBrowserBridge(options: {
         {
           clientCapabilities: [
             ...ELECTRON_REMOTE_RUNTIME_CLIENT_CAPABILITIES,
-            DESKTOP_BROWSER_BRIDGE_RUNTIME_CAPABILITY
+            DESKTOP_BROWSER_BRIDGE_RUNTIME_CAPABILITY,
+            DESKTOP_BROWSER_BRIDGE_CANCEL_CAPABILITY
           ]
         }
       )
     },
-    execute: (candidate, request, signal) =>
+    execute: (candidate, request, signal, hostRevoked) =>
       executeDesktopBrowserBridgeRequest(
         request,
         {
@@ -169,7 +171,8 @@ export function installDesktopBrowserBridge(options: {
             getDispatcher().dispatch({ id: randomUUID(), authToken: '', method, params }),
           audit: (entry) => log(`audit ${JSON.stringify(entry)}`)
         },
-        signal
+        signal,
+        hostRevoked
       ),
     log
   })

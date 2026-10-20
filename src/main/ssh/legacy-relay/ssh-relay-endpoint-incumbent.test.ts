@@ -1,9 +1,9 @@
-import type * as ExecCommandModule from '../remote-exec-command'
+import type * as ExecCommandModule from '../remote-exec/remote-exec-command'
 import { describe, expect, it, vi } from 'vitest'
 import { RELAY_LSOF_PROBE_JS } from '@orca/process-host/posix-lsof-probe'
 
 const execCommand = vi.fn()
-vi.mock('../remote-exec-command', async (importOriginal) => ({
+vi.mock('../remote-exec/remote-exec-command', async (importOriginal) => ({
   ...(await importOriginal<typeof ExecCommandModule>()),
   execCommand: (...args: unknown[]) => execCommand(...args),
   isUnconfirmedSshCommandTermination: (error: unknown) =>
@@ -16,7 +16,7 @@ import {
   probeRelayEndpointIncumbent,
   relayEndpointIncumbentProbeCommand
 } from './ssh-relay-endpoint-incumbent'
-import type { SshConnection } from '../ssh-connection'
+import type { SshConnection } from '../connection/ssh-connection'
 import { getRemoteHostPlatform } from '../ssh-remote-platform'
 
 // oxlint-disable-next-line typescript/consistent-type-assertions -- SAFETY: The mocked execCommand never dereferences the connection; the Windows path returns before using it.

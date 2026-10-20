@@ -2,7 +2,7 @@
 import { orcadRemoteBaseDir } from '../install/orcad-remote-windows-node'
 import { randomUUID } from 'node:crypto'
 import type { OrcadRollbackOptions, OrcadRollbackResult } from '../install/orcad-remote-rollback'
-import { isUnconfirmedSshCommandTermination } from '../../ssh/remote-exec-command'
+import { isUnconfirmedSshCommandTermination } from '../../ssh/remote-exec/remote-exec-command'
 import { withRolledBackVersion } from '../activation/orcad-activation-record'
 import { writeOrcadActivationRecord } from '../activation/orcad-activation-record-store'
 import { launchAndJudgeOrcadSlot } from '../../ssh/orcad-candidate-launch-verdict'
@@ -10,15 +10,17 @@ import { assessOrcadRollback } from '../../ssh/orcad-update-plan'
 import { ORCAD_LOG_FILENAME } from '../install/orcad-remote-host-support'
 import {
   captureOrcadStateSnapshotCommand,
-  newestStateMtimeCommand,
   orcadRollbackRescueDirName,
-  parseNewestStateMtimeSeconds,
   parseOrcadSnapshotCapture,
   parseOrcadSnapshotPresence,
   parseOrcadSnapshotRestore,
   probeOrcadStateSnapshotCommand,
   restoreOrcadStateSnapshotCommand
-} from '../../ssh/orcad-state-snapshot'
+} from '../host-state/orcad-state-snapshot'
+import {
+  newestStateMtimeCommand,
+  parseNewestStateMtimeSeconds
+} from '../host-state/orcad-state-newest-mtime'
 import { joinRemotePath } from '../../ssh/ssh-remote-platform'
 import type { OrcadActivationLockControl } from '../activation/orcad-activation-lock'
 import {
@@ -32,7 +34,7 @@ import {
 } from '../activation/orcad-activation-transaction-transitions'
 import { writeOrcadActivationTransaction } from '../activation/orcad-activation-transaction-store'
 import { execOrcadRemoteOr, withoutAbortSignal } from '../install/orcad-remote-runtime-control'
-import { execOrcadStateMutationOr } from '../../ssh/orcad-state-mutation-exec'
+import { execOrcadStateMutationOr } from '../host-state/orcad-state-mutation-exec'
 import {
   orcadSlotDir,
   resolveOrcadSlotIdentity,

@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import type * as ExecCommandModule from '../../ssh/remote-exec-command'
+import type * as ExecCommandModule from '../../ssh/remote-exec/remote-exec-command'
 import type * as RecordFile from '../install/orcad-remote-record-file'
 import type * as InstallLock from '../install/remote-install-lock'
 import type * as VersionedInstall from '../install/remote-versioned-install'
@@ -11,12 +11,12 @@ vi.mock('node:crypto', async (importOriginal) => {
   return { ...actual, randomUUID: () => uuid.fixed ?? actual.randomUUID() }
 })
 
-vi.mock('../../ssh/remote-exec-command', async (importOriginal) => ({
+vi.mock('../../ssh/remote-exec/remote-exec-command', async (importOriginal) => ({
   ...(await importOriginal<typeof ExecCommandModule>()),
   execCommand: vi.fn()
 }))
-vi.mock('../../ssh/ssh-connection-utils', () => ({
-  shellEscape: (s: string) => `'${s}'`
+vi.mock('../../../shared/shell-argument-quoting', () => ({
+  quotePosixShell: (s: string) => `'${s}'`
 }))
 vi.mock('../install/remote-install-lock', async (importOriginal) => ({
   ...(await importOriginal<typeof InstallLock>()),
@@ -38,7 +38,7 @@ vi.mock('../../ssh/orcad-local-build-hash', () => ({
   computeLocalOrcadBuildHash: () => 'abc123def4567890'
 }))
 
-import { execCommand } from '../../ssh/remote-exec-command'
+import { execCommand } from '../../ssh/remote-exec/remote-exec-command'
 import { acquireInstallLock } from '../install/remote-install-lock'
 import { writeAtomicOrcadRemoteRecord } from '../install/orcad-remote-record-file'
 import { deployOrcad } from '../../ssh/orcad-remote-deploy'
@@ -82,7 +82,8 @@ const deploy = (): Promise<unknown> =>
     ...slot,
     localOrcadDir: '/local/out/orcad',
     target: 'linux-x64-glibc',
-    census
+    census,
+    recountCensus: async () => census
   })
 const deployFromNewerApp = (): Promise<unknown> =>
   deployOrcad({
@@ -90,6 +91,7 @@ const deployFromNewerApp = (): Promise<unknown> =>
     localOrcadDir: '/local/out/orcad',
     target: 'linux-x64-glibc',
     census,
+    recountCensus: async () => census,
     appVersion: '1.9.0'
   })
 const rollback = (): Promise<unknown> =>
@@ -142,7 +144,10 @@ function expectExactlyTheRecordedSlot(): void {
 
 /** Unconfirmed termination never deletes a slot directory or a snapshot. */
 function expectNoSlotOrSnapshotRemoved(): void {
-  const removals = host.commands.filter((command) => /\brm -r?f\b/u.test(command))
+  const removals = host.commands
+    .filter((command) => /\brm -r?f\b/u.test(command))
+    // A failed capture's own partial archive was never a snapshot.
+    .map((command) => command.replace(/rm -f '[^']*\/state\.tar'\.partial/gu, ''))
   for (const command of removals) {
     // A file inside a slot (a consumed stop request) may go; the slot directory never does.
     expect(command).not.toMatch(/rm -r?f '[^']*\/orcad-\d[^'/]*\/?'/u)
