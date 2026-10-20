@@ -100,6 +100,7 @@ describe('readMacClipboardImageFileAsPng', () => {
   it.each([
     ['unrelated text', { text: 'look at this' }],
     ['a multi-file selection', { multi: true }],
+    ['an opaque binary filename list', { plist: 'bplist00opaque-selection' }],
     ['a non-image file', { file: 'notes.txt' }],
     ['a non-file URL', { fileUrl: 'https://example.com/a.png' }],
     ['no file URL', { fileUrl: '' }]
@@ -112,9 +113,10 @@ describe('readMacClipboardImageFileAsPng', () => {
       readMacClipboardImageFileAsPng(
         {
           fileUrl,
-          filenamesPlist: filenamesPlist(
-            variant.multi ? [filePath, join(dir, 'b.png')] : [filePath]
-          ),
+          filenamesPlist:
+            typeof variant.plist === 'string'
+              ? variant.plist
+              : filenamesPlist(variant.multi ? [filePath, join(dir, 'b.png')] : [filePath]),
           text: typeof variant.text === 'string' ? variant.text : ''
         },
         deps

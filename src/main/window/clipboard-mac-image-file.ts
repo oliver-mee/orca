@@ -23,7 +23,14 @@ function decodeCopiedImageFilePath({
     return null
   }
   // Why: public.file-url exposes only the first item of a Finder multi-selection.
-  if ((filenamesPlist.match(/<string>/g)?.length ?? 0) > 1) {
+  // An opaque/binary list cannot prove this was a single-file selection. Leave it
+  // to the ordinary paste path rather than silently importing only its first image.
+  if (
+    filenamesPlist.trim() &&
+    (!filenamesPlist.includes('<array>') ||
+      !filenamesPlist.includes('</array>') ||
+      (filenamesPlist.match(/<string>/g)?.length ?? 0) !== 1)
+  ) {
     return null
   }
   let filePath: string
