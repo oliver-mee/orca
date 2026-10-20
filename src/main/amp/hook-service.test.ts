@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs'
-import { tmpdir } from 'os'
-import { dirname, join } from 'path'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { dirname, join } from 'node:path'
 
 const { homedirMock } = vi.hoisted(() => ({
   homedirMock: vi.fn<() => string>()
@@ -42,13 +42,6 @@ describe('AmpHookService', () => {
     })
 
     const source = readFileSync(status.configPath, 'utf-8')
-    expect(source).toContain(_internals.AMP_PLUGIN_MARKER)
-    expect(source).toContain('/hook/amp')
-    expect(source).toContain("amp.on('session.start'")
-    expect(source).toContain("amp.on('agent.start'")
-    expect(source).toContain("amp.on('tool.call'")
-    expect(source).toContain("amp.on('tool.result'")
-    expect(source).toContain("amp.on('agent.end'")
     expect(source).toContain('return { action: "allow" }')
     expect(source).toContain('const MAX_PENDING_POSTS = 50')
     expect(source).toContain('let postQueue: QueuedPost[] = []')

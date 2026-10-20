@@ -10,7 +10,8 @@
  */
 
 import { describe, expect, it, vi, beforeEach } from 'vitest'
-import { DEFAULT_REPO_BADGE_COLOR } from '../../shared/constants'
+import { join } from 'node:path'
+import { DEFAULT_REPO_BADGE_COLOR, getDefaultWorkspaceDir } from '../../shared/constants'
 
 const {
   handleMock,
@@ -30,9 +31,9 @@ const {
   mockStore: {
     getRepos: vi.fn().mockReturnValue([]),
     addRepo: vi.fn(),
-    removeProject: vi.fn(),
     getRepo: vi.fn(),
-    updateRepo: vi.fn()
+    updateRepo: vi.fn(),
+    getSettings: vi.fn()
   },
   mkdirMock: vi.fn(),
   accessMock: vi.fn(),
@@ -59,8 +60,11 @@ vi.mock('fs/promises', () => ({
   rm: rmMock
 }))
 
+// `availableParallelism` is read at module load by the git admission scheduler,
+// which this module graph reaches; a partial `os` mock breaks that import.
 vi.mock('os', () => ({
-  homedir: homedirMock
+  homedir: homedirMock,
+  availableParallelism: () => 8
 }))
 
 vi.mock('../git/runner', () => ({
@@ -70,26 +74,17 @@ vi.mock('../git/runner', () => ({
 
 vi.mock('../git/repo', () => ({
   isGitRepo: vi.fn().mockReturnValue(true),
-  getGitUsername: vi.fn().mockReturnValue(''),
   getRepoName: vi.fn().mockImplementation((path: string) => path.split('/').pop()),
   getBaseRefDefault: vi.fn().mockResolvedValue('origin/main'),
   searchBaseRefs: vi.fn().mockResolvedValue([])
 }))
 
-vi.mock('./filesystem-auth', () => ({
+vi.mock('./registered-worktree-roots-cache', () => ({
   invalidateAuthorizedRootsCache: invalidateAuthorizedRootsCacheMock
 }))
 
 vi.mock('../worktree-root-preparation', () => ({
   prepareLocalWorktreeRootForRepo: prepareLocalWorktreeRootForRepoMock
-}))
-
-vi.mock('../providers/ssh-git-dispatch', () => ({
-  getSshGitProvider: vi.fn()
-}))
-
-vi.mock('./ssh', () => ({
-  getActiveMultiplexer: vi.fn()
 }))
 
 import { registerRepoHandlers } from './repos'
@@ -105,6 +100,10 @@ describe('repos:create', () => {
     isDestroyed: () => false,
     webContents: { send: vi.fn() }
   }
+  const tmpPath = (...segments: string[]): string => join('/tmp', ...segments)
+  const defaultProjectParent = join('/Users/alice', 'orca', 'projects')
+  // The value a fresh install seeds Settings -> Workspace Directory with.
+  const defaultWorkspaceDir = getDefaultWorkspaceDir('/Users/alice')
 
   const callCreate = (args: CreateArgs): Promise<CreateResult> => {
     const handler = handlers.get('repos:create')
@@ -130,6 +129,7 @@ describe('repos:create', () => {
     removeHandlerMock.mockReset()
     mockStore.getRepos.mockReset().mockReturnValue([])
     mockStore.addRepo.mockReset()
+    mockStore.getSettings.mockReset().mockReturnValue({ workspaceDir: defaultWorkspaceDir })
     mockWindow.webContents.send.mockReset()
     invalidateAuthorizedRootsCacheMock.mockReset()
     prepareLocalWorktreeRootForRepoMock.mockReset().mockResolvedValue(undefined)
@@ -142,7 +142,7 @@ describe('repos:create', () => {
     gitExecFileAsyncMock.mockReset().mockResolvedValue({ stdout: '', stderr: '' })
     homedirMock.mockReset().mockReturnValue('/Users/alice')
 
-    registerRepoHandlers(mockWindow as never, mockStore as never)
+    registerRepoHandlers(mockWindow as never, mockStore as never, {} as never)
   })
 
   it('registers the repos:create handler', () => {
@@ -151,7 +151,53 @@ describe('repos:create', () => {
 
   it('registers the home-backed create-project default handler', async () => {
     expect(handlers.has('repos:getDefaultCreateProjectParent')).toBe(true)
-    await expect(callDefaultCreateProjectParent()).resolves.toBe('/Users/alice/orca/projects')
+    await expect(callDefaultCreateProjectParent()).resolves.toBe(defaultProjectParent)
+  })
+
+  // ── create-project default parent (orca#14767) ────────────────────
+
+  it('defaults new projects to a configured Workspace Directory', async () => {
+    mockStore.getSettings.mockReturnValue({ workspaceDir: 'J:\\PROJECTS' })
+    await expect(callDefaultCreateProjectParent()).resolves.toBe('J:\\PROJECTS')
+  })
+
+  it('prefers the local host override over the client-default workspace directory', async () => {
+    mockStore.getSettings.mockReturnValue({
+      workspaceDir: 'J:\\PROJECTS',
+      hostSettingOverrides: { local: { defaultWorktreeLocation: 'D:\\code' } }
+    })
+    await expect(callDefaultCreateProjectParent()).resolves.toBe('D:\\code')
+  })
+
+  it.each([undefined, '', '   '])(
+    'falls back to ~/orca/projects for a blank workspace directory: %p',
+    async (workspaceDir) => {
+      mockStore.getSettings.mockReturnValue({ workspaceDir })
+      await expect(callDefaultCreateProjectParent()).resolves.toBe(defaultProjectParent)
+    }
+  )
+
+  // Why: workspaceDir is seeded, never blank, so the seeded value is not a user
+  // choice. Honouring it would move every existing user's new projects into the
+  // worktree root, where each project would host its own worktrees inside itself.
+  it('ignores the seeded workspace directory that the user never changed', async () => {
+    mockStore.getSettings.mockReturnValue({ workspaceDir: defaultWorkspaceDir })
+    await expect(callDefaultCreateProjectParent()).resolves.toBe(defaultProjectParent)
+  })
+
+  it('ignores the seeded workspace directory spelled with a trailing separator', async () => {
+    mockStore.getSettings.mockReturnValue({ workspaceDir: `${defaultWorkspaceDir}/` })
+    await expect(callDefaultCreateProjectParent()).resolves.toBe(defaultProjectParent)
+  })
+
+  it('ignores a Windows seeded workspace directory regardless of drive-letter case', async () => {
+    homedirMock.mockReturnValue('C:\\Users\\alice')
+    mockStore.getSettings.mockReturnValue({
+      workspaceDir: 'c:\\users\\alice\\orca\\workspaces'
+    })
+    await expect(callDefaultCreateProjectParent()).resolves.toBe(
+      join('C:\\Users\\alice', 'orca', 'projects')
+    )
   })
 
   it('unregisters any previously-registered repos:create handler', () => {
@@ -220,7 +266,7 @@ describe('repos:create', () => {
     expect(mkdirMock).toHaveBeenCalledWith('/tmp', { recursive: true })
     expect(mkdirMock).not.toHaveBeenCalledWith('/tmp/empty', expect.anything())
     expect(mockStore.addRepo).toHaveBeenCalledWith(
-      expect.objectContaining({ path: '/tmp/empty', kind: 'folder' })
+      expect.objectContaining({ path: tmpPath('empty'), kind: 'folder' })
     )
     expect(result).toHaveProperty('repo.kind', 'folder')
   })
@@ -230,23 +276,23 @@ describe('repos:create', () => {
     await callCreate({ parentPath: '/tmp', name: 'brand-new', kind: 'folder' })
 
     expect(mkdirMock).toHaveBeenNthCalledWith(1, '/tmp', { recursive: true })
-    expect(mkdirMock).toHaveBeenNthCalledWith(2, '/tmp/brand-new', { recursive: false })
+    expect(mkdirMock).toHaveBeenNthCalledWith(2, tmpPath('brand-new'), { recursive: false })
   })
 
   it('creates a missing default parent before creating the project directory', async () => {
     const result = await callCreate({
-      parentPath: '/Users/alice/orca/projects',
+      parentPath: defaultProjectParent,
       name: 'first-project',
       kind: 'folder'
     })
 
-    expect(mkdirMock).toHaveBeenNthCalledWith(1, '/Users/alice/orca/projects', {
+    expect(mkdirMock).toHaveBeenNthCalledWith(1, defaultProjectParent, {
       recursive: true
     })
-    expect(mkdirMock).toHaveBeenNthCalledWith(2, '/Users/alice/orca/projects/first-project', {
+    expect(mkdirMock).toHaveBeenNthCalledWith(2, join(defaultProjectParent, 'first-project'), {
       recursive: false
     })
-    expect(result).toHaveProperty('repo.path', '/Users/alice/orca/projects/first-project')
+    expect(result).toHaveProperty('repo.path', join(defaultProjectParent, 'first-project'))
   })
 
   // ── plain folder happy path ───────────────────────────────────────
@@ -257,7 +303,7 @@ describe('repos:create', () => {
     expect(gitExecFileAsyncMock).not.toHaveBeenCalled()
     expect(mockStore.addRepo).toHaveBeenCalledWith(
       expect.objectContaining({
-        path: '/tmp/plain',
+        path: tmpPath('plain'),
         displayName: 'plain',
         kind: 'folder'
       })
@@ -280,16 +326,16 @@ describe('repos:create', () => {
     const result = await callCreate({ parentPath: '/tmp', name: 'gitproj', kind: 'git' })
 
     expect(mkdirMock).toHaveBeenNthCalledWith(1, '/tmp', { recursive: true })
-    expect(mkdirMock).toHaveBeenNthCalledWith(2, '/tmp/gitproj', { recursive: false })
-    expect(gitExecFileAsyncMock).toHaveBeenNthCalledWith(1, ['init'], { cwd: '/tmp/gitproj' })
+    expect(mkdirMock).toHaveBeenNthCalledWith(2, tmpPath('gitproj'), { recursive: false })
+    expect(gitExecFileAsyncMock).toHaveBeenNthCalledWith(1, ['init'], { cwd: tmpPath('gitproj') })
     expect(gitExecFileAsyncMock).toHaveBeenNthCalledWith(
       2,
       ['commit', '--allow-empty', '-m', 'Initial commit'],
-      { cwd: '/tmp/gitproj' }
+      { cwd: tmpPath('gitproj') }
     )
     expect(mockStore.addRepo).toHaveBeenCalledWith(
       expect.objectContaining({
-        path: '/tmp/gitproj',
+        path: tmpPath('gitproj'),
         displayName: 'gitproj',
         kind: 'git'
       })
@@ -304,7 +350,7 @@ describe('repos:create', () => {
 
     const result = await callCreate({ parentPath: '/tmp', name: 'broken', kind: 'git' })
 
-    expect(rmMock).toHaveBeenCalledWith('/tmp/broken', { recursive: true, force: true })
+    expect(rmMock).toHaveBeenCalledWith(tmpPath('broken'), { recursive: true, force: true })
     expect(mockStore.addRepo).not.toHaveBeenCalled()
     expect(result).toMatchObject({ error: expect.stringContaining('Failed to initialize') })
   })
@@ -328,7 +374,7 @@ describe('repos:create', () => {
 
     const result = await callCreate({ parentPath: '/tmp', name: 'initfail', kind: 'git' })
 
-    expect(rmMock).toHaveBeenCalledWith('/tmp/initfail', { recursive: true, force: true })
+    expect(rmMock).toHaveBeenCalledWith(tmpPath('initfail'), { recursive: true, force: true })
     expect(mockStore.addRepo).not.toHaveBeenCalled()
     // Loose match — handler distinguishes init vs commit failures, and we want
     // to tolerate small wording tweaks as long as it still mentions "initialize".
@@ -345,7 +391,7 @@ describe('repos:create', () => {
 
     const result = await callCreate({ parentPath: '/tmp', name: 'commitfail', kind: 'git' })
 
-    expect(rmMock).toHaveBeenCalledWith('/tmp/commitfail', { recursive: true, force: true })
+    expect(rmMock).toHaveBeenCalledWith(tmpPath('commitfail'), { recursive: true, force: true })
     expect(mockStore.addRepo).not.toHaveBeenCalled()
     expect(result).toMatchObject({ error: expect.stringContaining('commit') })
   })
@@ -363,8 +409,14 @@ describe('repos:create', () => {
 
     const result = await callCreate({ parentPath: '/tmp', name: 'pre-existing', kind: 'git' })
 
-    expect(rmMock).toHaveBeenCalledWith('/tmp/pre-existing/.git', { recursive: true, force: true })
-    expect(rmMock).not.toHaveBeenCalledWith('/tmp/pre-existing', { recursive: true, force: true })
+    expect(rmMock).toHaveBeenCalledWith(tmpPath('pre-existing', '.git'), {
+      recursive: true,
+      force: true
+    })
+    expect(rmMock).not.toHaveBeenCalledWith(tmpPath('pre-existing'), {
+      recursive: true,
+      force: true
+    })
     expect(mockStore.addRepo).not.toHaveBeenCalled()
     expect(result).toMatchObject({ error: expect.stringContaining('commit') })
   })
@@ -381,7 +433,7 @@ describe('repos:create', () => {
 
     const result = await callCreate({ parentPath: '/tmp', name: 'authorless', kind: 'git' })
 
-    expect(rmMock).toHaveBeenCalledWith('/tmp/authorless', { recursive: true, force: true })
+    expect(rmMock).toHaveBeenCalledWith(tmpPath('authorless'), { recursive: true, force: true })
     expect(mockStore.addRepo).not.toHaveBeenCalled()
     expect(result).toMatchObject({
       error: expect.stringContaining('Git author identity is not configured')
@@ -409,7 +461,7 @@ describe('repos:create', () => {
 
     expect(prepareLocalWorktreeRootForRepoMock).toHaveBeenCalledWith(
       mockStore,
-      expect.objectContaining({ path: '/tmp/root-prep', kind: 'git' })
+      expect.objectContaining({ path: tmpPath('root-prep'), kind: 'git' })
     )
   })
 
@@ -420,7 +472,7 @@ describe('repos:create', () => {
   })
 
   it('does NOT rebuild the authorized-roots cache when dedup short-circuits', async () => {
-    const existing = { id: 'abc', path: '/tmp/dupe2', displayName: 'dupe2', kind: 'git' }
+    const existing = { id: 'abc', path: tmpPath('dupe2'), displayName: 'dupe2', kind: 'git' }
     mockStore.getRepos.mockReturnValue([existing])
 
     await callCreate({ parentPath: '/tmp', name: 'dupe2', kind: 'git' })
@@ -431,7 +483,7 @@ describe('repos:create', () => {
   // ── dedup-by-path ─────────────────────────────────────────────────
 
   it('returns the existing repo when one already lives at the target path', async () => {
-    const existing = { id: 'abc', path: '/tmp/dupe', displayName: 'dupe', kind: 'git' }
+    const existing = { id: 'abc', path: tmpPath('dupe'), displayName: 'dupe', kind: 'git' }
     mockStore.getRepos.mockReturnValue([existing])
 
     const result = await callCreate({ parentPath: '/tmp', name: 'dupe', kind: 'git' })
@@ -446,7 +498,7 @@ describe('repos:create', () => {
   it('returns existing badgeColor unchanged on repos:create dedupe', async () => {
     const existing = {
       id: 'abc',
-      path: '/tmp/dupe-color',
+      path: tmpPath('dupe-color'),
       displayName: 'dupe-color',
       kind: 'git',
       badgeColor: '#ef4444'

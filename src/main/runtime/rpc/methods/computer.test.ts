@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { buildRegistry } from '../core'
+import { eraseRpcMethods } from '../core'
 
 const computerMocks = vi.hoisted(() => ({
   callComputerSidecarAction: vi.fn(),
@@ -40,34 +40,6 @@ describe('computer RPC methods', () => {
     computerMocks.getComputerUsePermissionStatus.mockReset()
     resetComputerSessionsForTest()
     computerMocks.resetComputerSidecarForTest.mockClear()
-  })
-
-  it('registers all computer methods', () => {
-    const registry = buildRegistry(COMPUTER_METHODS)
-
-    expect([...registry.keys()].sort()).toEqual([
-      'computer.capabilities',
-      'computer.click',
-      'computer.drag',
-      'computer.getAppState',
-      'computer.hotkey',
-      'computer.listApps',
-      'computer.listWindows',
-      'computer.pasteText',
-      'computer.performSecondaryAction',
-      'computer.permissions',
-      'computer.permissionsStatus',
-      'computer.pressKey',
-      'computer.scroll',
-      'computer.setValue',
-      'computer.typeText'
-    ])
-  })
-
-  it('resets the sidecar test process', () => {
-    resetComputerSessionsForTest()
-
-    expect(computerMocks.resetComputerSidecarForTest).toHaveBeenCalledTimes(1)
   })
 
   it('lists running apps through the sidecar', async () => {
@@ -240,7 +212,7 @@ describe('computer RPC methods', () => {
 })
 
 function findMethod(name: string) {
-  const method = COMPUTER_METHODS.find((candidate) => candidate.name === name)
+  const method = eraseRpcMethods(COMPUTER_METHODS).find((candidate) => candidate.name === name)
   if (!method) {
     throw new Error(`missing method ${name}`)
   }

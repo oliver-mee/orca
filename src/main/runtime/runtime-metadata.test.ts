@@ -1,6 +1,7 @@
-import { chmodSync, mkdtempSync, readdirSync, statSync, writeFileSync } from 'fs'
-import { tmpdir } from 'os'
-import { join } from 'path'
+import nacl from 'tweetnacl'
+import { chmodSync, mkdtempSync, readdirSync, statSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { getRuntimeMetadataPath } from '../../shared/runtime-bootstrap'
 import { encodePairingOffer } from '../../shared/pairing'
@@ -232,9 +233,13 @@ describe('runtime metadata', () => {
           }
         ])
       )
+      // Why derived: the loader advertises the public key of the stored secret.
+      const storedPublicKeyB64 = Buffer.from(
+        nacl.box.keyPair.fromSecretKey(Buffer.from(keyMaterial, 'base64')).publicKey
+      ).toString('base64')
       writeFileSync(
         keypairPath,
-        JSON.stringify({ v: 1, publicKeyB64: keyMaterial, secretKeyB64: keyMaterial })
+        JSON.stringify({ v: 1, publicKeyB64: storedPublicKeyB64, secretKeyB64: keyMaterial })
       )
       for (const path of [devicesPath, keypairPath, environmentsPath]) {
         chmodSync(path, 0o644)
@@ -245,7 +250,7 @@ describe('runtime metadata', () => {
         token: 'token',
         scope: 'mobile'
       })
-      expect(loadOrCreateE2EEKeypair(userDataPath).publicKeyB64).toBe(keyMaterial)
+      expect(loadOrCreateE2EEKeypair(userDataPath).publicKeyB64).toBe(storedPublicKeyB64)
       expect(listEnvironments(userDataPath)[0]?.id).toBe(environment.id)
 
       for (const path of [devicesPath, keypairPath, environmentsPath]) {

@@ -9,10 +9,21 @@ import {
   type RuntimeEnvironmentCallRequest
 } from '@/runtime/runtime-compatibility-test-fixture'
 import { clearRuntimeCompatibilityCacheForTests } from '@/runtime/runtime-rpc-client'
+import type { RuntimeClientTarget } from '../../../shared/runtime-client-target'
+
+const LOCAL: RuntimeClientTarget = { kind: 'local' }
 
 describe('createUntitledMarkdownFile', () => {
   afterEach(() => {
     vi.unstubAllGlobals()
+  })
+
+  it('rejects captured ownership without a current-generation assertion', async () => {
+    await expect(
+      createUntitledMarkdownFile('/repo', 'wt-1', undefined, LOCAL, {
+        operationProvenance: {} as never
+      })
+    ).rejects.toThrow("Couldn't verify which host owns this file")
   })
 
   it('retries with the next untitled name when createFile loses the EEXIST race', async () => {
@@ -39,7 +50,7 @@ describe('createUntitledMarkdownFile', () => {
       }
     })
 
-    await expect(createUntitledMarkdownFile('/repo', 'wt-1')).resolves.toEqual({
+    await expect(createUntitledMarkdownFile('/repo', 'wt-1', undefined, LOCAL)).resolves.toEqual({
       filePath: '/repo/untitled-3.md',
       relativePath: 'untitled-3.md',
       worktreeId: 'wt-1',
@@ -48,8 +59,16 @@ describe('createUntitledMarkdownFile', () => {
       mode: 'edit'
     })
 
-    expect(createFile).toHaveBeenNthCalledWith(1, { filePath: '/repo/untitled-2.md' })
-    expect(createFile).toHaveBeenNthCalledWith(2, { filePath: '/repo/untitled-3.md' })
+    expect(createFile).toHaveBeenNthCalledWith(1, {
+      filePath: '/repo/untitled-2.md',
+      connectionId: undefined,
+      expectedExecutionHostId: 'local'
+    })
+    expect(createFile).toHaveBeenNthCalledWith(2, {
+      filePath: '/repo/untitled-3.md',
+      connectionId: undefined,
+      expectedExecutionHostId: 'local'
+    })
     expect(pathExists).toHaveBeenCalledTimes(3)
   })
 
@@ -65,7 +84,7 @@ describe('createUntitledMarkdownFile', () => {
       }
     })
 
-    await expect(createUntitledMarkdownFile('/repo', 'wt-1')).rejects.toThrow(
+    await expect(createUntitledMarkdownFile('/repo', 'wt-1', undefined, LOCAL)).rejects.toThrow(
       'Unable to create untitled markdown file after 100 attempts.'
     )
 
@@ -85,7 +104,9 @@ describe('createUntitledMarkdownFile', () => {
       }
     })
 
-    await expect(createUntitledMarkdownFile('/repo', 'wt-1', 'conn-1')).resolves.toMatchObject({
+    await expect(
+      createUntitledMarkdownFile('/repo', 'wt-1', 'conn-1', LOCAL)
+    ).resolves.toMatchObject({
       filePath: '/repo/untitled.md'
     })
 
@@ -98,7 +119,8 @@ describe('createUntitledMarkdownFile', () => {
     expect(stat).not.toHaveBeenCalled()
     expect(createFile).toHaveBeenCalledWith({
       filePath: '/repo/untitled.md',
-      connectionId: 'conn-1'
+      connectionId: 'conn-1',
+      expectedExecutionHostId: 'ssh:conn-1'
     })
   })
 
@@ -119,7 +141,7 @@ describe('createUntitledMarkdownFile', () => {
     })
 
     await expect(
-      createUntitledMarkdownFile('/repo', 'wt-1', undefined, undefined, {
+      createUntitledMarkdownFile('/repo', 'wt-1', undefined, LOCAL, {
         now: new Date(2026, 4, 29, 7, 5),
         template: {
           id: '.orca/templates/daily.md',
@@ -189,7 +211,7 @@ describe('createUntitledMarkdownFile', () => {
 
     try {
       await expect(
-        createUntitledMarkdownFileWithTemplateSelection('/repo', 'wt-1')
+        createUntitledMarkdownFileWithTemplateSelection('/repo', 'wt-1', undefined, LOCAL)
       ).resolves.toMatchObject({
         filePath: '/repo/untitled.md',
         relativePath: 'untitled.md',
@@ -239,7 +261,8 @@ describe('createUntitledMarkdownFile', () => {
 
     await expect(
       createUntitledMarkdownFile('/remote/repo', 'wt-1', undefined, {
-        activeRuntimeEnvironmentId: 'env-1'
+        kind: 'environment',
+        environmentId: 'env-1'
       })
     ).resolves.toMatchObject({
       filePath: '/remote/repo/untitled.md',
@@ -255,7 +278,12 @@ describe('createUntitledMarkdownFile', () => {
     expect(runtimeEnvironmentCall).toHaveBeenNthCalledWith(2, {
       selector: 'env-1',
       method: 'files.createFile',
-      params: { worktree: 'id:wt-1', relativePath: 'untitled.md' },
+      expectedEnvironmentPairingRevision: undefined,
+      params: {
+        worktree: 'id:wt-1',
+        relativePath: 'untitled.md',
+        expectedExecutionHostId: 'local'
+      },
       timeoutMs: 15_000
     })
     expect(stat).not.toHaveBeenCalled()

@@ -1,13 +1,19 @@
 import {
   AGENT_STATUS_STALE_AFTER_MS,
+  isFreshNonDoneAgentStatus,
   type AgentStatusState,
   type AgentType
 } from './agent-status-types'
+import { hasOtherAgentProcessOwner, type AgentProcessPresence } from './agent-process-presence'
+import { resolveCanonicalPaneAgentIdentity } from './pane-agent-identity-adapter'
+import type { TuiAgent } from './tui-agent'
 
 type ExistingAgentIdentity = {
   agentType?: AgentType
   state: AgentStatusState
   updatedAt: number
+  restoredUnconfirmed?: boolean
+  agentPresence?: AgentProcessPresence
 }
 
 type AgentIdentityResolution = {
@@ -17,11 +23,9 @@ type AgentIdentityResolution = {
 
 export function shouldSuppressInheritedTerminalStatus(args: {
   inheritedFromActivePane: boolean
-  incomingState: AgentStatusState
 }): boolean {
-  // Why: nested child hooks inherit the parent's ORCA_PANE_KEY. A child
-  // completion does not prove the active parent turn completed.
-  return args.inheritedFromActivePane && args.incomingState === 'done'
+  // Nested CLIs inherit the pane key, but own neither its turn nor its children.
+  return args.inheritedFromActivePane
 }
 
 function normalizedKnownAgentType(agentType: AgentType | null | undefined): AgentType | null {
@@ -36,7 +40,7 @@ function isActiveExistingIdentity(
   now: number,
   staleAfterMs: number
 ): boolean {
-  return existing.state !== 'done' && now - existing.updatedAt <= staleAfterMs
+  return isFreshNonDoneAgentStatus(existing, now, staleAfterMs)
 }
 
 export function resolveAgentStatusIdentity(args: {
@@ -61,18 +65,26 @@ export function resolveAgentStatusIdentity(args: {
       inheritedFromActivePane: false
     }
   }
-  if (isActiveExistingIdentity(args.existing, args.now, staleAfterMs)) {
+  const canonical = resolveCanonicalPaneAgentIdentity({
+    hookAgent: incomingAgentType as TuiAgent,
+    hookIsLive: true,
+    completedHookAgent: args.existing.state === 'done' ? (existingAgentType as TuiAgent) : undefined
+  })
+  if (
+    !args.existing.agentPresence?.suspended &&
+    (hasOtherAgentProcessOwner(args.existing.agentPresence, incomingAgentType) ||
+      isActiveExistingIdentity(args.existing, args.now, staleAfterMs))
+  ) {
     return {
       // Why: child agent CLIs inherit ORCA_PANE_KEY from their parent terminal.
-      // While the parent turn is active, do not let a nested hook steal the
-      // pane's visible identity.
+      // An idle turn does not end its foreground process or resume identity.
       agentType: existingAgentType,
       inheritedFromActivePane: true
     }
   }
 
   return {
-    agentType: incomingAgentType,
+    agentType: canonical.agent ?? incomingAgentType,
     inheritedFromActivePane: false
   }
 }

@@ -1,7 +1,9 @@
 import {
+  computerUseClickModifiersValidationMessage,
   computerUseHotkeyValidationMessage,
   computerUsePressKeyValidationMessage
 } from '../../shared/computer-use-key-spec'
+import { validateComputerClipboardPasteTextWithBoundedYield } from './computer-clipboard-paste-validation'
 import { RuntimeClientError } from './runtime-client-error'
 
 type ComputerProviderActionMethod =
@@ -15,10 +17,10 @@ type ComputerProviderActionMethod =
   | 'pasteText'
   | 'setValue'
 
-export function validateComputerProviderActionParams(
+export async function validateComputerProviderActionParams(
   method: ComputerProviderActionMethod,
   params: Record<string, unknown>
-): string {
+): Promise<string> {
   const app = requireNonEmptyString(params, 'app')
   validateWindowTarget(params)
   switch (method) {
@@ -26,6 +28,7 @@ export function validateComputerProviderActionParams(
       validateElementOrCoordinates('Click', params)
       validatePositiveInteger(params, 'clickCount')
       validateMouseButton(params)
+      validateClickModifiers(params)
       return app
     case 'performSecondaryAction':
       requireNonNegativeInteger(params, 'elementIndex')
@@ -40,8 +43,10 @@ export function validateComputerProviderActionParams(
       validateDragTarget(params)
       return app
     case 'typeText':
-    case 'pasteText':
       requireNonEmptyString(params, 'text')
+      return app
+    case 'pasteText':
+      await validatePasteText(params)
       return app
     case 'pressKey':
       validatePressKey(params)
@@ -156,6 +161,17 @@ function validateMouseButton(params: Record<string, unknown>): void {
   }
 }
 
+function validateClickModifiers(params: Record<string, unknown>): void {
+  if (params.modifiers === undefined) {
+    return
+  }
+  const modifiers = requireNonEmptyString(params, 'modifiers')
+  const message = computerUseClickModifiersValidationMessage(modifiers)
+  if (message) {
+    throw new RuntimeClientError('invalid_argument', message)
+  }
+}
+
 function validateScrollDirection(params: Record<string, unknown>): void {
   const direction = requireNonEmptyString(params, 'direction')
   if (direction !== 'up' && direction !== 'down' && direction !== 'left' && direction !== 'right') {
@@ -180,6 +196,11 @@ function validateHotkey(params: Record<string, unknown>): void {
   if (message) {
     throw new RuntimeClientError('invalid_argument', message)
   }
+}
+
+function validatePasteText(params: Record<string, unknown>): Promise<void> | void {
+  const text = requireNonEmptyString(params, 'text')
+  return validateComputerClipboardPasteTextWithBoundedYield(text)
 }
 
 function requireStringAllowingEmpty(params: Record<string, unknown>, key: string): string {

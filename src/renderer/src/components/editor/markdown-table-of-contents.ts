@@ -1,10 +1,11 @@
+import remarkCjkFriendly from 'remark-cjk-friendly/parseOnly'
 import remarkFrontmatter from 'remark-frontmatter'
 import remarkGfm from 'remark-gfm'
 import remarkParse from 'remark-parse'
 import { unified } from 'unified'
 import { MarkdownHeadingSlugger } from './markdown-heading-slug'
 
-export type MarkdownTocLevel = 1 | 2 | 3
+export type MarkdownTocLevel = 1 | 2 | 3 | 4 | 5
 
 export type MarkdownTocItem = {
   children: MarkdownTocItem[]
@@ -23,7 +24,7 @@ const htmlEntitiesForToc = new Map([
 ])
 
 function isMarkdownTocLevel(value: number): value is MarkdownTocLevel {
-  return value === 1 || value === 2 || value === 3
+  return value >= 1 && value <= 5
 }
 
 // Scoped local fork of the tiny entities@6.0.1 surface Orca used here.
@@ -49,15 +50,50 @@ function decodeTocHtmlEntities(text: string): string {
 }
 
 export function stripInlineMarkdownForToc(text: string): string {
-  return decodeTocHtmlEntities(text)
+  const stripped = decodeTocHtmlEntities(text)
     .replace(/!\[([^\]]*)\]\([^)]+\)/g, '$1')
     .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1')
     .replace(/\[\[[^|\]]+\|([^\]]+)\]\]/g, '$1')
     .replace(/\[\[([^\]]+)\]\]/g, '$1')
     .replace(/<[^>]+>/g, '')
     .replace(/[*_`~]/g, '')
-    .replace(/\s+/g, ' ')
-    .trim()
+  return foldMarkdownTocWhitespace(stripped)
+}
+
+// Why: headings can come from large pasted markdown; TOC labels only need
+// collapsed display whitespace, not a whole-string whitespace regex pass.
+function foldMarkdownTocWhitespace(value: string): string {
+  let normalized = ''
+  let pendingWhitespace = false
+  for (let index = 0; index < value.length; index += 1) {
+    const code = value.charCodeAt(index)
+    if (isMarkdownTocWhitespace(code)) {
+      pendingWhitespace = normalized.length > 0
+      continue
+    }
+    if (pendingWhitespace) {
+      normalized += ' '
+      pendingWhitespace = false
+    }
+    normalized += value.charAt(index)
+  }
+  return normalized
+}
+
+function isMarkdownTocWhitespace(code: number): boolean {
+  return (
+    code === 32 ||
+    (code >= 9 && code <= 13) ||
+    code === 160 ||
+    code === 5760 ||
+    (code >= 8192 && code <= 8202) ||
+    code === 8232 ||
+    code === 8233 ||
+    code === 8239 ||
+    code === 8287 ||
+    code === 12288 ||
+    code === 65279
+  )
 }
 
 function nearestParent(stack: MarkdownTocItem[], level: MarkdownTocLevel): MarkdownTocItem {
@@ -77,7 +113,7 @@ function appendTocItem(stack: MarkdownTocItem[], item: MarkdownTocItem): void {
 }
 
 type MarkdownAstNode = {
-  alt?: string
+  alt?: string | null
   children?: MarkdownAstNode[]
   depth?: number
   type?: string
@@ -107,8 +143,9 @@ export function buildMarkdownTableOfContents(markdown: string): MarkdownTocItem[
   const tree = unified()
     .use(remarkParse)
     .use(remarkGfm)
+    .use(remarkCjkFriendly)
     .use(remarkFrontmatter, ['yaml', 'toml'])
-    .parse(markdown) as MarkdownAstNode
+    .parse(markdown)
 
   function visit(node: MarkdownAstNode): void {
     if (
@@ -116,7 +153,7 @@ export function buildMarkdownTableOfContents(markdown: string): MarkdownTocItem[
       typeof node.depth === 'number' &&
       isMarkdownTocLevel(node.depth)
     ) {
-      const title = markdownAstNodeToText(node).replace(/\s+/g, ' ').trim()
+      const title = foldMarkdownTocWhitespace(markdownAstNodeToText(node))
       if (title) {
         appendTocItem(stack, {
           children: [],

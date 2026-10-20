@@ -1,4 +1,20 @@
 import type { Terminal } from '@xterm/xterm'
+import type { WindowsInputRecordNewline } from './terminal-paste-model'
+import {
+  BRACKETED_PASTE_END,
+  BRACKETED_PASTE_START,
+  normalizeTerminalPasteLineEndings,
+  sanitizeBracketedPasteText,
+  wrapTerminalBracketedPasteText
+} from '../../../../shared/terminal-bracketed-paste-text'
+
+export {
+  BRACKETED_PASTE_END,
+  BRACKETED_PASTE_START,
+  normalizeTerminalPasteLineEndings,
+  sanitizeBracketedPasteText,
+  wrapTerminalBracketedPasteText
+}
 
 type BracketedPasteTerminal = {
   modes: {
@@ -14,37 +30,64 @@ type PasteTerminal = BracketedPasteTerminal & {
 
 type PasteTerminalTextOptions = {
   forceBracketedPaste?: boolean
+  windowsInputRecordNewline?: WindowsInputRecordNewline
 }
 
 const interruptedBracketedPasteTerminals = new WeakSet<object>()
 const bracketedPasteModeOutputTail = new WeakMap<object, string>()
 const ESCAPE = '\u001b'
-const BRACKETED_PASTE_START = `${ESCAPE}[200~`
-const BRACKETED_PASTE_END = `${ESCAPE}[201~`
 const BRACKETED_PASTE_MODE_SEQUENCE_RE = /^\[\?(?:\d+;)*2004(?:;\d+)*[hl]/
 const BRACKETED_PASTE_MODE_TAIL_MAX = 128
+const BRACKETED_PASTE_MODE_SEQUENCE_SCAN_MAX = BRACKETED_PASTE_MODE_TAIL_MAX
 const LINE_BREAK_RE = /[\r\n]/
 
 function hasBracketedPasteModeSequence(data: string): boolean {
-  const segments = data.split(ESCAPE)
-  for (let index = 1; index < segments.length; index++) {
-    if (BRACKETED_PASTE_MODE_SEQUENCE_RE.test(segments[index])) {
+  let escapeIndex = data.indexOf(ESCAPE)
+  while (escapeIndex !== -1) {
+    const sequenceStart = escapeIndex + 1
+    if (
+      data.charCodeAt(sequenceStart) === 0x5b &&
+      BRACKETED_PASTE_MODE_SEQUENCE_RE.test(
+        data.slice(sequenceStart, sequenceStart + BRACKETED_PASTE_MODE_SEQUENCE_SCAN_MAX)
+      )
+    ) {
       return true
     }
+    escapeIndex = data.indexOf(ESCAPE, escapeIndex + 1)
   }
   return false
 }
 
-function sanitizeBracketedPasteText(text: string): string {
-  return text.split(ESCAPE).join('\u241b')
+export function sanitizeTerminalPasteText(text: string): string {
+  return sanitizeBracketedPasteText(text)
+}
+
+export function encodeWindowsInputRecordPasteText(
+  text: string,
+  newline: WindowsInputRecordNewline
+): string {
+  const newlineSequence = newline === 'csi-u' ? '\x1b[13;2u' : '\x1b\r'
+  let encoded = ''
+  for (let index = 0; index < text.length; index += 1) {
+    const char = text[index]
+    if (char === '\r') {
+      encoded += newlineSequence
+      if (text[index + 1] === '\n') {
+        index += 1
+      }
+    } else if (char === '\n') {
+      encoded += newlineSequence
+    } else {
+      encoded += char === ESCAPE ? '\u241b' : char
+    }
+  }
+  return encoded
 }
 
 function forceBracketedPaste(terminal: PasteTerminal, text: string): void {
   // Why: forced callers already built the exact paste protocol bytes. Send
   // them as PTY input so xterm's DOM/native paste machinery cannot defer them.
-  terminal.input(
-    `${BRACKETED_PASTE_START}${sanitizeBracketedPasteText(text)}${BRACKETED_PASTE_END}`
-  )
+  terminal.input(wrapTerminalBracketedPasteText(text))
 }
 
 export function markTerminalBracketedPasteInterrupted(terminal: BracketedPasteTerminal): void {
@@ -74,6 +117,12 @@ export function pasteTerminalText(
   text: string,
   options?: PasteTerminalTextOptions
 ): void {
+  if (options?.windowsInputRecordNewline) {
+    // Why: input-record TUIs see bracket markers as keys; modified Enter preserves
+    // pasted newlines without turning the first one into submit.
+    terminal.input(encodeWindowsInputRecordPasteText(text, options.windowsInputRecordNewline))
+    return
+  }
   if (options?.forceBracketedPaste) {
     // Why: generated image paths are paste payloads, even when they are a
     // single line, so they must bypass stale Ctrl+C plain-text suppression.
@@ -100,7 +149,7 @@ export function pasteTerminalText(
   // process dies. Single-line paste does not need wrappers, so avoid leaking them.
   terminal.options.ignoreBracketedPasteMode = true
   try {
-    terminal.paste(sanitizeBracketedPasteText(text))
+    terminal.paste(sanitizeTerminalPasteText(text))
   } finally {
     terminal.options.ignoreBracketedPasteMode = previousIgnoreBracketedPasteMode
   }

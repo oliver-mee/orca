@@ -1,12 +1,12 @@
-import { existsSync, mkdtempSync, writeFileSync } from 'fs'
-import { tmpdir } from 'os'
-import { join } from 'path'
+import { existsSync, mkdtempSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { basename, join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import {
   createRuntimeTransportMetadata,
   RUNTIME_SOCKET_NAME_REGEX,
   sweepOrphanedRuntimeSockets
-} from './runtime-rpc'
+} from './runtime-rpc/runtime-rpc-socket-metadata'
 
 describe('sweepOrphanedRuntimeSockets', () => {
   // Why: a pid we know is always alive and is never the test runner's own
@@ -63,8 +63,8 @@ describe('sweepOrphanedRuntimeSockets', () => {
     if (transport.kind !== 'unix') {
       throw new Error('expected unix transport')
     }
-    const basename = transport.endpoint.slice(transport.endpoint.lastIndexOf('/') + 1)
-    expect(RUNTIME_SOCKET_NAME_REGEX.test(basename)).toBe(true)
+    const socketName = basename(transport.endpoint)
+    expect(RUNTIME_SOCKET_NAME_REGEX.test(socketName)).toBe(true)
   })
 
   it('regex invariant: also matches the fallback runtimeId suffix ("rt")', () => {
@@ -76,8 +76,8 @@ describe('sweepOrphanedRuntimeSockets', () => {
     if (transport.kind !== 'unix') {
       throw new Error('expected unix transport')
     }
-    const basename = transport.endpoint.slice(transport.endpoint.lastIndexOf('/') + 1)
-    expect(RUNTIME_SOCKET_NAME_REGEX.test(basename)).toBe(true)
-    expect(basename).toBe('o-99-rt.sock')
+    const socketName = basename(transport.endpoint)
+    expect(RUNTIME_SOCKET_NAME_REGEX.test(socketName)).toBe(true)
+    expect(socketName).toBe('o-99-rt.sock')
   })
 })

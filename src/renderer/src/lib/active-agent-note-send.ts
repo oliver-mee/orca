@@ -1,57 +1,80 @@
-import type { RuntimeTerminalSend, RuntimeTerminalWait } from '../../../shared/runtime-types'
+import type { RuntimeTerminalWait } from '../../../shared/runtime-types'
+import { runtimeTargetForOwnerEnvironment } from '@/runtime/runtime-client-target'
+import type { RuntimeClientTarget } from '../../../shared/runtime-client-target'
 import { useAppStore } from '@/store'
-import { callRuntimeRpc, getActiveRuntimeTarget } from '@/runtime/runtime-rpc-client'
-import { getSettingsForWorktreeRuntimeOwner } from '@/lib/worktree-runtime-owner'
+import { callRuntimeRpc } from '@/runtime/runtime-rpc-client'
+import { runtimeEnvironmentIdWithLegacyFallbackUnlessTwin } from '@/lib/worktree-runtime-owner'
 import { findActiveRuntimeTerminal, getActiveTerminalNoteTarget } from './active-agent-note-target'
+import type { ActiveTerminalNoteTarget } from './active-agent-note-target'
+import type { ActiveAgentNotesSendResult } from './active-agent-note-send-result'
+import {
+  ACTIVE_AGENT_SEND_RPC_TIMEOUT_MS,
+  getTerminalAgentSendReadiness,
+  isRuntimeTerminalUnavailable,
+  isRuntimeTimeout
+} from './active-agent-terminal-send-readiness'
+import {
+  codeForReadinessStatus,
+  reportNoteSendFailure,
+  runtimeFailureCode,
+  runtimeFailureFallbackCode
+} from './active-agent-note-send-diagnostics'
+import {
+  sendPromptWithGuardedPasteAndEnter,
+  sendPromptWithLegacyCombinedSend
+} from './active-agent-note-send-delivery'
 
 export {
   getActiveAgentNoteTarget,
   getActiveAgentRuntimeProbeDescriptor,
   getActiveTerminalNoteTarget,
   probeActiveAgentNoteTarget,
-  useCanSendNotesToActiveTerminal,
   type ActiveTerminalNoteTarget
 } from './active-agent-note-target'
-
+export {
+  activeAgentNotesSendFailureMessage,
+  type ActiveAgentNotesSendResult,
+  type ActiveAgentNotesSendStatus
+} from './active-agent-note-send-result'
 const ACTIVE_AGENT_SEND_TIMEOUT_MS = 8000
-const ACTIVE_AGENT_SEND_RPC_TIMEOUT_MS = 15000
 
-export type ActiveAgentNotesSendStatus =
-  | 'sent'
-  | 'empty'
-  | 'no-active-terminal'
-  | 'no-agent'
-  | 'not-ready'
-  | 'not-writable'
-
-export type ActiveAgentNotesSendResult = {
-  status: ActiveAgentNotesSendStatus
+export async function sendNotesToActiveAgentSession(args: {
+  worktreeId: string
+  prompt: string
+  noteTarget?: ActiveTerminalNoteTarget
+  timeoutMs?: number
+}): Promise<ActiveAgentNotesSendResult> {
+  try {
+    return await sendNotesToActiveAgentSessionInternal(args)
+  } catch (error) {
+    return reportNoteSendFailure(
+      { status: 'status-unavailable', code: runtimeFailureFallbackCode(error) },
+      args.noteTarget ?? null
+    )
+  }
 }
-
-export async function sendNotesToActiveAgentSession({
+async function sendNotesToActiveAgentSessionInternal({
   worktreeId,
   prompt,
-  timeoutMs = ACTIVE_AGENT_SEND_TIMEOUT_MS
+  noteTarget: explicitNoteTarget,
+  timeoutMs
 }: {
   worktreeId: string
   prompt: string
+  noteTarget?: ActiveTerminalNoteTarget
   timeoutMs?: number
 }): Promise<ActiveAgentNotesSendResult> {
   const trimmedPrompt = prompt.trim()
   if (!trimmedPrompt) {
-    return { status: 'empty' }
+    return { status: 'empty', code: 'empty' }
   }
-
   const state = useAppStore.getState()
-  const noteTarget = getActiveTerminalNoteTarget(state, worktreeId)
+  const noteTarget = explicitNoteTarget ?? getActiveTerminalNoteTarget(state, worktreeId)
   if (!noteTarget) {
-    return { status: 'no-active-terminal' }
+    return reportNoteSendFailure({ status: 'no-active-terminal', code: 'no-note-target' }, null)
   }
-
-  // Route by the worktree's owner host so the agent terminal is found and driven
-  // on the host that actually runs it, not on the focused runtime.
-  const runtimeTarget = getActiveRuntimeTarget(
-    getSettingsForWorktreeRuntimeOwner(state, worktreeId)
+  const runtimeTarget = runtimeTargetForOwnerEnvironment(
+    runtimeEnvironmentIdWithLegacyFallbackUnlessTwin(state, worktreeId)
   )
   const terminal = await findActiveRuntimeTerminal(
     runtimeTarget,
@@ -60,83 +83,104 @@ export async function sendNotesToActiveAgentSession({
     ACTIVE_AGENT_SEND_RPC_TIMEOUT_MS
   )
   if (!terminal) {
-    return { status: 'no-active-terminal' }
+    return reportNoteSendFailure(
+      { status: 'no-active-terminal', code: 'no-inventory-match' },
+      noteTarget
+    )
   }
-
-  // Why: sending notes submits with Enter, so only the runtime's agent/idle
-  // checks can authorize it; tab labels and renderer state are not enough.
-  const agentCheck = await callRuntimeRpc<{ isRunningAgent: boolean }>(
-    runtimeTarget,
-    'terminal.isRunningAgent',
-    { terminal: terminal.handle },
-    { timeoutMs: ACTIVE_AGENT_SEND_RPC_TIMEOUT_MS }
-  )
-  if (!agentCheck.isRunningAgent) {
-    return { status: 'no-agent' }
+  if (explicitNoteTarget) {
+    return reportNoteSendFailure(
+      await sendPromptToExplicitAgentTarget(runtimeTarget, terminal.handle, trimmedPrompt),
+      noteTarget
+    )
   }
-
+  const effectiveTimeoutMs = timeoutMs ?? ACTIVE_AGENT_SEND_TIMEOUT_MS
+  const initialAgentStatus = await getTerminalAgentSendReadiness(runtimeTarget, terminal.handle, {
+    allowLegacyFallback: true
+  })
+  if (initialAgentStatus.status !== 'sendable') {
+    return reportNoteSendFailure(
+      {
+        status: initialAgentStatus.status,
+        code: initialAgentStatus.code ?? codeForReadinessStatus(initialAgentStatus.status)
+      },
+      noteTarget
+    )
+  }
   try {
     const { wait } = await callRuntimeRpc<{ wait: RuntimeTerminalWait }>(
       runtimeTarget,
       'terminal.wait',
-      { terminal: terminal.handle, for: 'tui-idle', timeoutMs },
-      { timeoutMs: timeoutMs + 5000 }
+      { terminal: terminal.handle, for: 'tui-idle', timeoutMs: effectiveTimeoutMs },
+      { timeoutMs: effectiveTimeoutMs + 5000 }
     )
+    if (wait.status !== 'running') {
+      return reportNoteSendFailure(
+        { status: 'no-active-terminal', code: 'terminal_wait_not_running' },
+        noteTarget
+      )
+    }
+    if (wait.blockedReason) {
+      return reportNoteSendFailure(
+        { status: 'permission', code: 'terminal_wait_blocked' },
+        noteTarget
+      )
+    }
     if (!wait.satisfied) {
-      return { status: 'not-ready' }
+      return reportNoteSendFailure(
+        { status: 'not-ready', code: 'terminal_wait_unsatisfied' },
+        noteTarget
+      )
     }
   } catch (error) {
     if (isRuntimeTerminalUnavailable(error)) {
-      return { status: 'no-active-terminal' }
+      return reportNoteSendFailure(
+        { status: 'no-active-terminal', code: runtimeFailureCode(error) ?? 'runtime-unverifiable' },
+        noteTarget
+      )
     }
     if (isRuntimeTimeout(error)) {
-      return { status: 'not-ready' }
+      return reportNoteSendFailure(
+        { status: 'not-ready', code: 'terminal_wait_timeout' },
+        noteTarget
+      )
     }
     throw error
   }
-
-  const { send } = await callRuntimeRpc<{ send: RuntimeTerminalSend }>(
-    runtimeTarget,
-    'terminal.send',
-    {
-      terminal: terminal.handle,
-      text: trimmedPrompt,
-      enter: true,
-      client: { id: 'orca-desktop', type: 'desktop' }
-    },
-    { timeoutMs: ACTIVE_AGENT_SEND_RPC_TIMEOUT_MS }
-  )
-  return send.accepted ? { status: 'sent' } : { status: 'not-writable' }
-}
-
-export function activeAgentNotesSendFailureMessage(status: ActiveAgentNotesSendStatus): string {
-  switch (status) {
-    case 'empty':
-      return 'No notes to send.'
-    case 'no-active-terminal':
-      return 'Open the agent terminal in this worktree, then send the notes again.'
-    case 'no-agent':
-      return 'The active terminal is not a recognized agent session.'
-    case 'not-ready':
-      return 'The active agent was not ready for input yet.'
-    case 'not-writable':
-      return 'The active terminal did not accept the notes.'
-    case 'sent':
-      return ''
+  const finalAgentStatus = await getTerminalAgentSendReadiness(runtimeTarget, terminal.handle, {
+    allowLegacyFallback: true
+  })
+  if (finalAgentStatus.status !== 'sendable') {
+    return reportNoteSendFailure(
+      {
+        status: finalAgentStatus.status,
+        code: finalAgentStatus.code ?? codeForReadinessStatus(finalAgentStatus.status)
+      },
+      noteTarget
+    )
   }
-}
 
-function isRuntimeTimeout(error: unknown): boolean {
-  const message = error instanceof Error ? error.message : String(error)
-  return message.includes('timeout')
-}
+  if (finalAgentStatus.supportsGuardedSend) {
+    return reportNoteSendFailure(
+      await sendPromptWithGuardedPasteAndEnter(runtimeTarget, terminal.handle, trimmedPrompt, {
+        allowLegacyFallback: false
+      }),
+      noteTarget
+    )
+  }
 
-function isRuntimeTerminalUnavailable(error: unknown): boolean {
-  const message = error instanceof Error ? error.message : String(error)
-  return (
-    message.includes('terminal_handle_stale') ||
-    message.includes('terminal_exited') ||
-    message.includes('terminal_gone') ||
-    message.includes('no_active_terminal')
+  return reportNoteSendFailure(
+    await sendPromptWithLegacyCombinedSend(runtimeTarget, terminal.handle, trimmedPrompt),
+    noteTarget
   )
+}
+
+async function sendPromptToExplicitAgentTarget(
+  runtimeTarget: RuntimeClientTarget,
+  terminalHandle: string,
+  prompt: string
+): Promise<ActiveAgentNotesSendResult> {
+  return await sendPromptWithGuardedPasteAndEnter(runtimeTarget, terminalHandle, prompt, {
+    allowLegacyFallback: false
+  })
 }

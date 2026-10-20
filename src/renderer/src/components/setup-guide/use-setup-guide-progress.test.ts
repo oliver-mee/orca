@@ -30,7 +30,6 @@ function makeProgress(overrides: Partial<FeatureWallSetupProgress> = {}): Featur
       'default-agent': false,
       'add-two-repos': false,
       notifications: false,
-      'split-terminal': false,
       'two-worktrees': false,
       browser: false,
       'task-sources': false,
@@ -48,15 +47,27 @@ describe('browser milestone legacy setup guide progress', () => {
     expect(
       shouldMarkBrowserMilestoneLegacyComplete({
         stepDone: makePreBrowserDoneStepState(),
+        historicalSplitTerminalDone: true,
         setupGuideSidebarDismissed: false
       })
     ).toBe(true)
+  })
+
+  it('does not waive browser for old profiles missing historical split completion', () => {
+    expect(
+      shouldMarkBrowserMilestoneLegacyComplete({
+        stepDone: makePreBrowserDoneStepState(),
+        historicalSplitTerminalDone: false,
+        setupGuideSidebarDismissed: false
+      })
+    ).toBe(false)
   })
 
   it('marks old profiles as legacy-complete when the sidebar checklist was dismissed', () => {
     expect(
       shouldMarkBrowserMilestoneLegacyComplete({
         stepDone: {},
+        historicalSplitTerminalDone: false,
         setupGuideSidebarDismissed: true
       })
     ).toBe(true)
@@ -66,8 +77,9 @@ describe('browser milestone legacy setup guide progress', () => {
     expect(
       shouldMarkBrowserMilestoneLegacyComplete({
         stepDone: {
-          'split-terminal': true
+          'two-worktrees': true
         },
+        historicalSplitTerminalDone: true,
         setupGuideSidebarDismissed: false
       })
     ).toBe(false)
@@ -203,18 +215,16 @@ describe('getSetupGuideProgressReady', () => {
 })
 
 describe('setup script probe readiness', () => {
-  it('derives the probe signature from runtime and ordered git repo inputs', () => {
+  it('derives the probe signature from each repo host and order', () => {
     const localSignature = getSetupScriptProbeSignature({ activeRuntimeEnvironmentId: null }, [
       { id: 'repo-a', hookSettings: undefined },
       { id: 'repo-b', hookSettings: undefined }
     ])
-    const remoteSignature = getSetupScriptProbeSignature(
-      { activeRuntimeEnvironmentId: 'runtime-1' },
-      [
-        { id: 'repo-a', hookSettings: undefined },
-        { id: 'repo-b', hookSettings: undefined }
-      ]
-    )
+    // Why: hooks are probed on each repo's own host, so a repo moving host changes the signature.
+    const remoteSignature = getSetupScriptProbeSignature({ activeRuntimeEnvironmentId: null }, [
+      { id: 'repo-a', hookSettings: undefined, executionHostId: 'runtime:runtime-1' },
+      { id: 'repo-b', hookSettings: undefined }
+    ])
     const reorderedSignature = getSetupScriptProbeSignature({ activeRuntimeEnvironmentId: null }, [
       { id: 'repo-b', hookSettings: undefined },
       { id: 'repo-a', hookSettings: undefined }

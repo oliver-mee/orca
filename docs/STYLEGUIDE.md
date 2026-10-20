@@ -67,9 +67,9 @@ A common point of drift. Use these conventions for any list-style row (worktrees
 
 - **Idle:** transparent background.
 - **Hover:** `bg-accent` (in the worktree sidebar, `bg-sidebar-accent`).
-- **Keyboard-selected (cmdk highlight):** `data-[selected=true]:bg-accent` plus a `border-border` outline so the active row stays visible while the user types. The `data-selected` attribute is set by `cmdk` automatically.
+- **Keyboard-selected (cmdk highlight):** do **not** rely on flat `bg-accent` alone on light popover/dialog surfaces — `--accent` (#f5f5f5) is nearly identical to `--background` (#fff), so the cursor vanishes. Use the jump-palette recipe in `main.css` (`.jump-palette-item[data-selected='true']`): `color-mix` foreground into background (~12%) plus an inset ring. Expose the mix as `--jump-palette-selection-surface` when nested cutouts (status pips) must match. The `data-selected` attribute is set by `cmdk` automatically.
 - **Persistent "current" / "active" row** (e.g. the worktree the user is viewing): also `bg-accent`, _plus_ a `data-current="true"` attribute so CSS or future styling can distinguish it from the cmdk highlight.
-- **Don't:** hardcode `bg-[#ededed]` / `bg-[#333333]` or invent a "selected" color. The accent token already adapts to light/dark and matches the rest of the app.
+- **Don't:** hardcode `bg-[#ededed]` / `bg-[#333333]` or invent a "selected" color. Mix from existing tokens (`foreground`/`background`/`accent`) so light/dark stay aligned.
 
 ### Color mixing
 
@@ -91,6 +91,29 @@ This keeps light/dark parity automatic.
   - 12px (sub-text, paths, secondary content)
   - 13px (sidebar items, dense list rows)
   - 14px (default body, button text in `default` size)
+- **Named small steps:** `text-2xs` (11px) and `text-3xs` (10px) are theme steps in `main.css`. Use them instead of `text-[11px]` / `text-[10px]`.
+
+### Chat type scale
+
+The native chat uses four steps and no others. Never write an arbitrary size (`text-[13px]`) inside `components/native-chat/`. `pnpm lint` enforces this, along with the softened-foreground and focus-ring rules below (`config/oxlint-plugins/native-chat-design-tokens.mjs`).
+
+| Step             | Default | Use it for                                                                                                 |
+| ---------------- | ------- | ---------------------------------------------------------------------------------------------------------- |
+| `text-sm`        | 14px    | Anything the user reads: message prose, tool and agent activity rows, card titles and bodies, the composer |
+| `text-xs`        | 12px    | Labels, timestamps, counters, secondary lines under a row                                                  |
+| `text-2xs`       | 11px    | Captions, attribution, uppercase category labels                                                           |
+| `text-3xs`       | 10px    | Badges and mono pills                                                                                      |
+| `text-chat-code` | 12px    | Code blocks, diffs, commands and tool output                                                               |
+
+The chat root (`.native-chat-appearance`) redefines these steps as ratios of the Text size setting, so every tier scales together; `text-chat-code` follows the Code text size setting. The chat root also ties the spacing unit to the text size (4px at the default 14px), so icons, gaps, padding and row heights grow with the text. Use spacing-scale utilities (`size-3.5`, `min-h-6.5`, `pl-3.25`), not pixel lengths (`min-h-[26px]`), or the element stays fixed while the rest scales. Size an element with one of these utilities only: a CSS rule that sets `font-size` outside a layer silently overrides them.
+
+### Chat text colour, hover and focus
+
+- **Primary text on the chat canvas** uses `text-chat-foreground`, and `text-chat-foreground-strong` for titles and emphasis; both follow the Contrast setting. Don't soften `text-foreground` by hand (`text-foreground/85`). `text-foreground` is for text on a lifted surface inside the chat.
+- **Secondary text on the chat canvas** (transcript rows, notices, labels between messages) uses `text-chat-foreground-faint`. `text-muted-foreground` is for text on a lifted surface inside the chat: cards, menus, popovers and the docks above the composer.
+- **Row hover** in the transcript is `hover:bg-accent/20`. Buttons, menu items and card controls use `hover:bg-accent`.
+- **Focus rings:** full-width transcript rows use the inset ring (`focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring`) so it isn't clipped by the scroll container; standalone controls use `focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring`. Inside the chat `--ring` is `--chat-focus-ring`, which clears 3:1 on the canvas; don't lower its opacity.
+- **State colours in the chat:** warnings use `text-chat-warning`; diff lines use `text-chat-diff-added` / `text-chat-diff-removed`; what the reader has not seen yet uses `text-chat-unread`. They are mixed toward the foreground so they pass text contrast in light and dark. Don't use raw palette colours (`text-yellow-500`) or the git decoration tokens for text on a tinted row.
 
 ## Radius
 
@@ -102,7 +125,7 @@ Orca uses shadows sparingly. Three levels in practice:
 
 1. **Inset hairline** — `border` + `border` token. The default. Almost everything sits at this level.
 2. **Subtle lift** — `shadow-xs` + a single-token border. Outline buttons, embedded cards.
-3. **Floating** — `0 10px 24px rgba(0, 0, 0, 0.18)`. Popovers, popups that escape the editor surface. Reserved.
+3. **Floating** — `shadow-floating` (`0 10px 24px rgba(0, 0, 0, 0.18)`). Popovers, popups that escape the editor surface. Reserved.
 
 Don't add a fourth level. If something needs more emphasis than "floating," you're probably reaching for the focus `ring` instead.
 
@@ -110,7 +133,7 @@ Don't add a fourth level. If something needs more emphasis than "floating," you'
 
 Use the shadcn primitives in `src/renderer/src/components/ui/` before writing anything custom. The shadcn-style wrappers in this folder follow a consistent pattern:
 
-- Most carry a `data-slot="<name>"` attribute on their root for CSS targeting — do not strip it. (The non-shadcn helpers in this folder — `sonner`, `repo-multi-combobox`, `team-multi-combobox` — don't follow this pattern and shouldn't be modeled when adding new primitives that should.)
+- Most carry a `data-slot="<name>"` attribute on their root for CSS targeting — do not strip it. (The non-shadcn helpers in this folder — `sonner` and `repo-multi-combobox` — don't follow this pattern and shouldn't be modeled when adding new primitives that should.)
 - Use `cn()` for class merging. Pass user `className` last so callers can override.
 - Use `class-variance-authority` (CVA) for variants when there are multiple.
 
@@ -133,24 +156,26 @@ Sizes: `default` (36px), `sm` (32px), `xs` (24px), `lg` (40px), plus `icon`, `ic
 
 Browse `src/renderer/src/components/ui/` for the full list. Most wrap a Radix UI primitive — exceptions are `command` (wraps `cmdk`), `sonner` (wraps `sonner`), and the visual-only wrappers (`badge`, `button-group`, `card`, `input`) which apply tokens and Tailwind utilities directly. Never reimplement headless behavior; extend the existing wrapper.
 
+Use `DialogContent surface="security"` for every dialog that asks the user to trust, approve, run or remove code, including plugin provenance and approval, so plugin themes cannot change the trust surface's tokens. Use its `scrollable` prop when the whole dialog scrolls. Wrap a trust decision outside a dialog, such as an agent approval card or a certificate override, in `SecuritySurface`.
+
 ### Picking the right primitive
 
 When a control has multiple plausible primitives, use this fork:
 
-| You want…                                                    | Reach for                                                            | Don't use                             |
-| ------------------------------------------------------------ | -------------------------------------------------------------------- | ------------------------------------- |
-| Hover-only label on an icon-only button                      | `Tooltip`                                                            | `HoverCard` (too heavy), title attr   |
-| Hover preview of richer content (avatar + summary)           | `HoverCard`                                                          | `Tooltip` (no rich content)           |
-| Click-revealed menu with actions                             | `DropdownMenu`                                                       | `Popover` with hand-rolled list       |
-| Right-click contextual actions                               | `ContextMenu`                                                        | `DropdownMenu` (different invocation) |
-| Click-revealed surface with arbitrary content (form, picker) | `Popover`                                                            | `Dialog` (it traps focus and dims)    |
-| Modal that demands a decision before you continue            | `Dialog`                                                             | `Popover`, inline overlay             |
-| Drawer / panel sliding in from an edge                       | `Sheet`                                                              | `Dialog` centered                     |
-| Single choice from a known list                              | `Select`                                                             | Custom listbox                        |
-| Single choice with search / fuzzy filtering                  | `Command` inside `Popover`                                           | `Select` (no search)                  |
-| Multi-select with search                                     | `repo-multi-combobox` / `team-multi-combobox` (mirror their pattern) | Roll a new one                        |
-| Transient confirmation ("Saved", "Copied")                   | `sonner` toast                                                       | `Dialog`, inline banner               |
-| Persistent inline status ("3 errors")                        | inline text + `Badge`                                                | toast (toasts disappear)              |
+| You want…                                                    | Reach for                                  | Don't use                             |
+| ------------------------------------------------------------ | ------------------------------------------ | ------------------------------------- |
+| Hover-only label on an icon-only button                      | `Tooltip`                                  | `HoverCard` (too heavy), title attr   |
+| Hover preview of richer content (avatar + summary)           | `HoverCard`                                | `Tooltip` (no rich content)           |
+| Click-revealed menu with actions                             | `DropdownMenu`                             | `Popover` with hand-rolled list       |
+| Right-click contextual actions                               | `ContextMenu`                              | `DropdownMenu` (different invocation) |
+| Click-revealed surface with arbitrary content (form, picker) | `Popover`                                  | `Dialog` (it traps focus and dims)    |
+| Modal that demands a decision before you continue            | `Dialog`                                   | `Popover`, inline overlay             |
+| Drawer / panel sliding in from an edge                       | `Sheet`                                    | `Dialog` centered                     |
+| Single choice from a known list                              | `Select`                                   | Custom listbox                        |
+| Single choice with search / fuzzy filtering                  | `Command` inside `Popover`                 | `Select` (no search)                  |
+| Multi-select with search                                     | `repo-multi-combobox` (mirror its pattern) | Roll a new one                        |
+| Transient confirmation ("Saved", "Copied")                   | `sonner` toast                             | `Dialog`, inline banner               |
+| Persistent inline status ("3 errors")                        | inline text + `Badge`                      | toast (toasts disappear)              |
 
 If you find yourself styling around a primitive (`<Popover>` to act like a `<Dialog>`, or vice versa), stop and reconsider — the focus-management semantics differ and a future contributor will be misled by the mismatch.
 
@@ -225,7 +250,7 @@ Three scrollbar classes are defined globally in `main.css`:
 
 - **`.scrollbar-sleek`** — the default thin, neutral scrollbar for sidebars, lists, popovers. Pair with `.scrollbar-sleek-parent` on a hover-target ancestor if you want the thumb to fade in only on parent hover.
 - **`.scrollbar-editor`** — slightly heavier, used inside Monaco-adjacent surfaces.
-- **`.worktree-sidebar-scrollbar`** — reserves the gutter but keeps the thumb invisible until the parent (`.scrollbar-sleek-parent`) is hovered. Used only in the worktree sidebar so the chrome stays still.
+- **`.worktree-sidebar-scrollbar`** — no reserved gutter: paired with `overflow-y-auto`, the scrollbar (and its width) exists only while content actually overflows, so a short list stays flush with the fixed header controls and classic-scrollbar Windows shows no arrow buttons on empty lists. The thumb stays invisible until the parent (`.scrollbar-sleek-parent`) is hovered. Used only in the worktree sidebar.
 
 Apply one of these to overflow containers; don't write a fourth style.
 
@@ -264,7 +289,7 @@ Use this rubric when reviewing any Orca IDE screen, screenshot, or prototype. A 
 - **Layout density:** avoid jamming controls together. Preserve breathing room around the primary workflow, reduce competing buttons, and keep toolbar groups visually distinct. Dense screens are acceptable only when grouping, alignment, and hierarchy make scanning faster.
 - **Cards and containers:** cards must be visually distinct from their parent surface through the existing `card`/`border` treatment. Avoid nesting cards inside cards. If a section is not a repeated item, modal, or framed tool, consider an unframed layout or full-width band instead.
 - **Side-by-side layouts:** default to row-by-row layouts for complex workflows because they are easier to align and scan. Use side-by-side layouts only when space is constrained or comparison is the point, then polish column widths, baselines, and wrapping states carefully.
-- **Animation:** use subtle animation to soften expanding/collapsing content and prevent jumpy layout changes. Animation should clarify continuity, not decorate. Respect reduced-motion settings.
+- **Animation:** use subtle animation to soften expanding/collapsing content and prevent jumpy layout changes. Animation should clarify continuity, not decorate. Respect reduced motion element by element: turn movement off with `motion-reduce:` (slides, rotations, size changes); give spinners, pulses and progress indicators a still state that still says "working" (`LoadingSpinner` does this for spinners) instead of freezing them; short opacity fades can stay. Scripted scrolls ignore CSS, so pass them through `motionSafeScrollBehavior()`.
 - **SSH and latency:** assume actions may run remotely. Disable submit controls immediately, delay visible loading feedback when appropriate, and keep focus stable while remote data arrives.
 
 ### 1. Match in-flight feedback to perceived duration

@@ -1,11 +1,16 @@
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { DirCache, TreeNode } from './file-explorer-types'
 import {
   createVisibleFileExplorerRowProjection,
-  getEffectiveFileExplorerIgnoredPaths,
   getFileExplorerIgnoredQueryRelativePaths
 } from './useFileExplorerVisibleRowProjection'
-import { getFileExplorerNameFilterExpandedPaths } from './file-explorer-name-filter-projection'
+import { getEffectiveFileExplorerIgnoredPaths } from './use-file-explorer-ignored-paths'
+import {
+  FILE_EXPLORER_NAME_FILTER_QUERY_MAX_BYTES,
+  getFileExplorerNameFilterExpandedPaths,
+  getFileExplorerNameFilterIgnoredQueryRelativePaths,
+  getFileExplorerNameFilterTokens
+} from './file-explorer-name-filter-projection'
 
 function row(relativePath: string, isDirectory = false, depth?: number): TreeNode {
   return {
@@ -20,7 +25,7 @@ function row(relativePath: string, isDirectory = false, depth?: number): TreeNod
 function cache(childrenByPath: Record<string, TreeNode[]>): Record<string, DirCache> {
   const dirCache: Record<string, DirCache> = {}
   for (const [path, children] of Object.entries(childrenByPath)) {
-    dirCache[path] = { children, loading: false }
+    dirCache[path] = { children }
   }
   return dirCache
 }
@@ -35,6 +40,10 @@ function input(
     worktreePath: '/repo'
   }
 }
+
+afterEach(() => {
+  vi.restoreAllMocks()
+})
 
 describe('file explorer visible row projection', () => {
   it('keeps dotfiles and ignored files visible when toggles are on', () => {
@@ -159,6 +168,31 @@ describe('file explorer visible row projection', () => {
     ])
   })
 
+  it('hides descendants under collapsed folders while a file-name filter is active', () => {
+    const projection = createVisibleFileExplorerRowProjection(
+      input({
+        '/repo': [row('docs', true, 0), row('src', true, 0)]
+      }),
+      {
+        ignoredSet: new Set(),
+        nameFilter: {
+          query: 'ts',
+          relativePaths: ['docs/guide.ts', 'src/components/FileExplorer.tsx', 'src/index.ts']
+        },
+        nameFilterCollapsedPaths: new Set(['/repo/src']),
+        showDotfiles: true,
+        showGitIgnoredFiles: true
+      }
+    )
+
+    expect(projection.getVisibleSlice(0, 10).map((entry) => entry.relativePath)).toEqual([
+      'docs',
+      'docs/guide.ts',
+      'src'
+    ])
+    expect([...getFileExplorerNameFilterExpandedPaths(projection, 'ts')]).toEqual(['/repo/docs'])
+  })
+
   it('does not fall back to the partial cached tree while recursive file filtering is loading', () => {
     const projection = createVisibleFileExplorerRowProjection(
       input(
@@ -238,6 +272,39 @@ describe('file explorer visible row projection', () => {
     ])
   })
 
+  it('rejects oversized file-name filter queries before scanning recursive paths', () => {
+    const oversizedQuery = 'secret-file-filter'.repeat(FILE_EXPLORER_NAME_FILTER_QUERY_MAX_BYTES)
+    const nameFilter = {
+      query: oversizedQuery,
+      relativePaths: ['src/FileExplorer.tsx', 'docs/secret-file-filter.md']
+    }
+
+    const projection = createVisibleFileExplorerRowProjection(
+      input({
+        '/repo': [row('src', true, 0), row('docs', true, 0)]
+      }),
+      {
+        ignoredSet: new Set(),
+        nameFilter,
+        showDotfiles: true,
+        showGitIgnoredFiles: true
+      }
+    )
+
+    expect(getFileExplorerNameFilterTokens(oversizedQuery)).toEqual([])
+    expect(getFileExplorerNameFilterIgnoredQueryRelativePaths(nameFilter, true)).toEqual([])
+    expect(projection.getVisibleCount()).toBe(0)
+    expect([...getFileExplorerNameFilterExpandedPaths(projection, oversizedQuery)]).toEqual([])
+  })
+
+  it('tokenizes accepted pasted file-name filters without regex splitting', () => {
+    const split = vi.spyOn(String.prototype, 'split')
+    const query = ['  FileExplorer', String.fromCharCode(160), '\nStatus  '].join('')
+
+    expect(getFileExplorerNameFilterTokens(query)).toEqual(['fileexplorer', 'status'])
+    expect(split).not.toHaveBeenCalled()
+  })
+
   it('queries git ignored paths only for dotfile-visible rows', () => {
     const treeInput = input({
       '/repo': [row('src/index.ts'), row('.env'), row('src/.generated/output.ts')]
@@ -269,8 +336,6 @@ describe('file explorer visible row projection', () => {
   })
 
   it('keeps same-worktree ignored paths while an expanded-folder query is loading', () => {
-    const previousRelativePaths = ['out', 'src']
-
     expect(
       getEffectiveFileExplorerIgnoredPaths({
         activeWorktreeId: 'worktree-1',
@@ -278,7 +343,6 @@ describe('file explorer visible row projection', () => {
         ignoredPathResult: {
           activeWorktreeId: 'worktree-1',
           paths: ['out'],
-          relativePaths: previousRelativePaths,
           worktreePath: '/repo'
         },
         worktreePath: '/repo'
@@ -305,7 +369,6 @@ describe('file explorer visible row projection', () => {
         ignoredPathResult: {
           activeWorktreeId: 'worktree-1',
           paths: ['out'],
-          relativePaths: ['out'],
           worktreePath: '/repo'
         },
         worktreePath: '/repo'
@@ -319,7 +382,6 @@ describe('file explorer visible row projection', () => {
         ignoredPathResult: {
           activeWorktreeId: 'worktree-1',
           paths: ['out'],
-          relativePaths: ['out'],
           worktreePath: '/repo'
         },
         worktreePath: '/other-repo'

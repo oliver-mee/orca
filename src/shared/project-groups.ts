@@ -1,14 +1,9 @@
-import type { Repo, ProjectGroup, ProjectGroupCreatedFrom } from './types'
+import { normalizeExecutionHostId } from './execution-host'
+import type { ProjectGroup, ProjectGroupCreatedFrom } from './project-group-types'
+import type { Repo } from './repo-types'
+import { createNonSecureContextUuid } from './non-secure-context-uuid'
 
 export const UNGROUPED_PROJECT_GROUP_KEY = 'project-group:ungrouped'
-
-function createProjectGroupId(): string {
-  const randomUUID = globalThis.crypto?.randomUUID
-  if (randomUUID) {
-    return randomUUID.call(globalThis.crypto)
-  }
-  return `project-group-${Date.now()}-${Math.random().toString(36).slice(2)}`
-}
 
 export function normalizeProjectGroupName(name: string, fallback = 'Untitled group'): string {
   const trimmed = name.trim()
@@ -26,7 +21,7 @@ export function createProjectGroup(input: {
 }): ProjectGroup {
   const now = input.now ?? Date.now()
   return {
-    id: createProjectGroupId(),
+    id: createNonSecureContextUuid(),
     name: normalizeProjectGroupName(input.name),
     parentPath: input.parentPath ?? null,
     connectionId: input.connectionId ?? null,
@@ -56,6 +51,7 @@ export function normalizeProjectGroups(value: unknown): ProjectGroup[] {
     }
     seen.add(raw.id)
     const now = Date.now()
+    const executionHostId = normalizeExecutionHostId(raw.executionHostId)
     groups.push({
       id: raw.id,
       name: normalizeProjectGroupName(typeof raw.name === 'string' ? raw.name : ''),
@@ -80,15 +76,16 @@ export function normalizeProjectGroups(value: unknown): ProjectGroup[] {
       createdAt:
         typeof raw.createdAt === 'number' && Number.isFinite(raw.createdAt) ? raw.createdAt : now,
       updatedAt:
-        typeof raw.updatedAt === 'number' && Number.isFinite(raw.updatedAt) ? raw.updatedAt : now
+        typeof raw.updatedAt === 'number' && Number.isFinite(raw.updatedAt) ? raw.updatedAt : now,
+      // Why: runtime-owned groups otherwise look local after persistence reload.
+      ...(executionHostId ? { executionHostId } : {})
     })
   }
   groups.sort(
     (left, right) => left.tabOrder - right.tabOrder || left.name.localeCompare(right.name)
   )
-  const groupIds = new Set(groups.map((group) => group.id))
   for (const group of groups) {
-    if (group.parentGroupId === group.id || !groupIds.has(group.parentGroupId ?? '')) {
+    if (group.parentGroupId === group.id || !seen.has(group.parentGroupId ?? '')) {
       group.parentGroupId = null
     }
   }
@@ -104,10 +101,12 @@ export function clearMissingProjectGroupMemberships(repos: Repo[], groups: Proje
   )
 }
 
-export function getProjectGroupSubtreeIds(
-  groups: readonly Pick<ProjectGroup, 'id' | 'parentGroupId'>[],
-  rootGroupId: string
-): Set<string> {
+export type ProjectGroupChildIndex = ReadonlyMap<string, string[]>
+
+/** Build once and reuse when collecting subtrees for more than one root. */
+export function buildProjectGroupChildIndex(
+  groups: readonly Pick<ProjectGroup, 'id' | 'parentGroupId'>[]
+): ProjectGroupChildIndex {
   const childGroupsByParentId = new Map<string, string[]>()
   for (const group of groups) {
     if (!group.parentGroupId) {
@@ -117,7 +116,20 @@ export function getProjectGroupSubtreeIds(
     children.push(group.id)
     childGroupsByParentId.set(group.parentGroupId, children)
   }
+  return childGroupsByParentId
+}
 
+export function getProjectGroupSubtreeIds(
+  groups: readonly Pick<ProjectGroup, 'id' | 'parentGroupId'>[],
+  rootGroupId: string
+): Set<string> {
+  return collectProjectGroupSubtreeIds(buildProjectGroupChildIndex(groups), rootGroupId)
+}
+
+export function collectProjectGroupSubtreeIds(
+  childGroupsByParentId: ProjectGroupChildIndex,
+  rootGroupId: string
+): Set<string> {
   const subtreeIds = new Set<string>()
   const pending = [rootGroupId]
   while (pending.length > 0) {
@@ -135,6 +147,31 @@ export function getProjectGroupSubtreeIds(
   return subtreeIds
 }
 
+/** Manual rank for a project inside a group bucket. Explicit
+ *  `projectGroupOrder` wins; otherwise fall back to global repo order so drag
+ *  midpoint math and sidebar sorting stay aligned. */
+export function getEffectiveProjectGroupManualRank(
+  repo: Pick<Repo, 'id' | 'projectGroupOrder'> | undefined,
+  repoOrderRankById?: ReadonlyMap<string, number>,
+  siblingFallbackIndex?: number
+): number {
+  if (!repo) {
+    return Number.POSITIVE_INFINITY
+  }
+  const order = repo.projectGroupOrder
+  if (typeof order === 'number' && Number.isFinite(order)) {
+    return order
+  }
+  const repoRank = repoOrderRankById?.get(repo.id)
+  if (repoRank !== undefined) {
+    return repoRank * 1000
+  }
+  if (siblingFallbackIndex !== undefined) {
+    return siblingFallbackIndex * 1000
+  }
+  return Number.POSITIVE_INFINITY
+}
+
 export function getNextProjectGroupOrder(repos: readonly Repo[], groupId: string | null): number {
   let max = -1
   for (const repo of repos) {
@@ -147,4 +184,15 @@ export function getNextProjectGroupOrder(repos: readonly Repo[], groupId: string
     }
   }
   return max + 1
+}
+
+/**
+ * One row per group id, in first-seen order. Hosts can publish one group under the same id (a
+ * project moved to a managed server keeps the desktop's copy, #30045); the last copy wins, as in
+ * every id-keyed group lookup, so the sidebar and search agree on its name.
+ */
+export function getDistinctProjectGroups<T extends Pick<ProjectGroup, 'id'>>(
+  projectGroups: readonly T[]
+): T[] {
+  return [...new Map(projectGroups.map((group) => [group.id, group])).values()]
 }

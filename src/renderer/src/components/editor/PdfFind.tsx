@@ -1,8 +1,10 @@
+import { ImeInput } from '@/lib/ime-text-field'
 import { useCallback, useEffect, useState } from 'react'
 import { ChevronUp, ChevronDown, X } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import type { EventBus } from 'pdfjs-dist/web/pdf_viewer.mjs'
 import { translate } from '@/i18n/i18n'
+import { getFindRequestQuery } from '@/lib/find-query-bounds'
 
 type PdfFindProps = {
   isOpen: boolean
@@ -18,37 +20,38 @@ export default function PdfFind({
   const [query, setQuery] = useState('')
   const [activeMatch, setActiveMatch] = useState(0)
   const [totalMatches, setTotalMatches] = useState(0)
+  const requestQuery = getFindRequestQuery(query)
 
   const dispatchFind = useCallback(
     (type: string, findPrevious = false): void => {
       const eventBus = eventBusRef.current
-      if (!eventBus) {
+      if (!eventBus || !requestQuery) {
         return
       }
       eventBus.dispatch('find', {
         source: null,
         type,
-        query,
+        query: requestQuery,
         highlightAll: true,
         caseSensitive: false,
         entireWord: false,
         findPrevious
       })
     },
-    [eventBusRef, query]
+    [eventBusRef, requestQuery]
   )
 
   const findNext = useCallback(() => {
-    if (query) {
+    if (requestQuery) {
       dispatchFind('again', false)
     }
-  }, [query, dispatchFind])
+  }, [requestQuery, dispatchFind])
 
   const findPrevious = useCallback(() => {
-    if (query) {
+    if (requestQuery) {
       dispatchFind('again', true)
     }
-  }, [query, dispatchFind])
+  }, [requestQuery, dispatchFind])
 
   const handleInputRef = useCallback((input: HTMLInputElement | null) => {
     if (!input) {
@@ -58,20 +61,7 @@ export default function PdfFind({
     input.select()
   }, [])
 
-  useEffect(() => {
-    if (!isOpen) {
-      return
-    }
-    if (!query) {
-      const eventBus = eventBusRef.current
-      if (eventBus) {
-        eventBus.dispatch('findbarclose', { source: null })
-      }
-      return
-    }
-    dispatchFind('')
-  }, [query, isOpen, dispatchFind, eventBusRef])
-
+  // Subscribe before dispatching: PDF.js can report cached counts synchronously.
   useEffect(() => {
     const eventBus = eventBusRef.current
     if (!eventBus || !isOpen) {
@@ -84,10 +74,27 @@ export default function PdfFind({
       setTotalMatches(evt.matchesCount.total)
     }
     eventBus.on('updatefindmatchescount', handleMatchesCount)
+    // Navigation and zero-result searches report counts on the control-state event.
+    eventBus.on('updatefindcontrolstate', handleMatchesCount)
     return () => {
       eventBus.off('updatefindmatchescount', handleMatchesCount)
+      eventBus.off('updatefindcontrolstate', handleMatchesCount)
     }
   }, [eventBusRef, isOpen])
+
+  useEffect(() => {
+    if (!isOpen) {
+      return
+    }
+    if (!requestQuery) {
+      const eventBus = eventBusRef.current
+      if (eventBus) {
+        eventBus.dispatch('findbarclose', { source: null })
+      }
+      return
+    }
+    dispatchFind('')
+  }, [requestQuery, isOpen, dispatchFind, eventBusRef])
 
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent) => {
@@ -105,7 +112,7 @@ export default function PdfFind({
 
   // Why: close hides the bar immediately; reset counters before the next commit
   // so reopening with the same query never paints stale match totals.
-  if ((!isOpen || !query) && (activeMatch !== 0 || totalMatches !== 0)) {
+  if ((!isOpen || !requestQuery) && (activeMatch !== 0 || totalMatches !== 0)) {
     setActiveMatch(0)
     setTotalMatches(0)
   }
@@ -120,7 +127,7 @@ export default function PdfFind({
       style={{ width: 300 }}
       onKeyDown={handleKeyDown}
     >
-      <input
+      <ImeInput
         ref={handleInputRef}
         type="text"
         value={query}

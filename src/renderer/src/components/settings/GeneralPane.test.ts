@@ -1,15 +1,25 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import {
   createAutoSaveDelayDraftState,
-  createHttpProxyBypassRulesDraftState,
-  createHttpProxyUrlDraftState,
   getDesktopPlatformFromUserAgent,
-  setHttpProxyUrlDraftErrorState,
-  shouldCommitOpenInApplicationsDraft,
-  updateAutoSaveDelayDraftState,
-  updateHttpProxyBypassRulesDraftState,
-  updateHttpProxyUrlDraftState
+  getGeneralPaneSearchEntries,
+  getTabOrderControlSearchKeywords,
+  shouldShowProjectRuntimeSection,
+  updateAutoSaveDelayDraftState
 } from './GeneralPane'
+import { matchesSettingsSearch } from './settings-search'
+
+vi.mock('@/store', () => ({
+  useAppStore: () => {
+    throw new Error('Pure settings helpers must not access the app store')
+  }
+}))
+
+vi.mock('@/components/terminal-pane/TerminalPane', () => ({
+  default: () => {
+    throw new Error('This suite must not render a terminal pane')
+  }
+}))
 
 describe('GeneralPane auto-save delay drafts', () => {
   it('keeps a committed draft tied to the current persisted source while settings save is pending', () => {
@@ -31,92 +41,6 @@ describe('GeneralPane auto-save delay drafts', () => {
   })
 })
 
-describe('GeneralPane proxy drafts', () => {
-  it('keeps a committed proxy URL draft tied to the current persisted source', () => {
-    const current = createHttpProxyUrlDraftState(undefined)
-
-    expect(updateHttpProxyUrlDraftState(current, undefined, 'http://proxy.test:8080')).toEqual({
-      sourceValue: '',
-      draft: 'http://proxy.test:8080',
-      error: null
-    })
-  })
-
-  it('reconciles stale proxy URL state and clears errors before applying a new draft', () => {
-    const current = setHttpProxyUrlDraftErrorState(
-      updateHttpProxyUrlDraftState(
-        createHttpProxyUrlDraftState('http://old.test:8080'),
-        'http://old.test:8080',
-        'bad proxy'
-      ),
-      'http://old.test:8080',
-      'Invalid proxy URL'
-    )
-
-    expect(
-      updateHttpProxyUrlDraftState(current, 'http://new.test:8080', 'http://typed.test:8080')
-    ).toEqual({
-      sourceValue: 'http://new.test:8080',
-      draft: 'http://typed.test:8080',
-      error: null
-    })
-  })
-
-  it('keeps committed proxy bypass rules tied to the current persisted source', () => {
-    const current = createHttpProxyBypassRulesDraftState('localhost')
-
-    expect(
-      updateHttpProxyBypassRulesDraftState(current, 'localhost', 'localhost,127.0.0.1')
-    ).toEqual({
-      sourceValue: 'localhost',
-      draft: 'localhost,127.0.0.1'
-    })
-  })
-
-  it('reconciles stale proxy bypass rules before applying a new draft', () => {
-    const current = updateHttpProxyBypassRulesDraftState(
-      createHttpProxyBypassRulesDraftState('localhost'),
-      'localhost',
-      'localhost,127.0.0.1'
-    )
-
-    expect(updateHttpProxyBypassRulesDraftState(current, '*.internal', '*.corp')).toEqual({
-      sourceValue: '*.internal',
-      draft: '*.corp'
-    })
-  })
-})
-
-describe('GeneralPane open-in application drafts', () => {
-  it('does not commit rows until both label and command are present', () => {
-    expect(
-      shouldCommitOpenInApplicationsDraft([{ id: 'draft', label: 'Cursor', command: '' }])
-    ).toBe(false)
-    expect(
-      shouldCommitOpenInApplicationsDraft([{ id: 'draft', label: '', command: 'cursor' }])
-    ).toBe(false)
-    expect(
-      shouldCommitOpenInApplicationsDraft([{ id: 'draft', label: '   ', command: 'cursor' }])
-    ).toBe(false)
-    expect(
-      shouldCommitOpenInApplicationsDraft([{ id: 'draft', label: 'Cursor', command: '   ' }])
-    ).toBe(false)
-  })
-
-  it('allows commit when every draft row has a label and command', () => {
-    expect(shouldCommitOpenInApplicationsDraft([])).toBe(true)
-    expect(
-      shouldCommitOpenInApplicationsDraft([{ id: 'cursor', label: 'Cursor', command: 'cursor' }])
-    ).toBe(true)
-    expect(
-      shouldCommitOpenInApplicationsDraft([
-        { id: 'cursor', label: 'Cursor', command: 'cursor' },
-        { id: 'zed', label: 'Zed', command: 'zed' }
-      ])
-    ).toBe(true)
-  })
-})
-
 describe('GeneralPane desktop platform detection', () => {
   it('keeps Windows available for Windows-only CLI settings', () => {
     expect(
@@ -128,5 +52,75 @@ describe('GeneralPane desktop platform detection', () => {
       'darwin'
     )
     expect(getDesktopPlatformFromUserAgent('Mozilla/5.0 (X11; Linux x86_64)')).toBe('other')
+  })
+})
+
+describe('GeneralPane navigation search keywords', () => {
+  it('keeps pinned-tab keywords out of the Tab Order control', () => {
+    const keywords = getTabOrderControlSearchKeywords()
+
+    expect(keywords).toContain('Tab Order')
+    expect(keywords).toContain('recent')
+    expect(keywords).not.toContain('pinned')
+    expect(keywords).not.toContain('confirm')
+    expect(keywords).not.toContain('close')
+  })
+})
+
+describe('GeneralPane search entries', () => {
+  it('includes the default project runtime setting', () => {
+    const entries = getGeneralPaneSearchEntries()
+
+    expect(matchesSettingsSearch('default project runtime', entries)).toBe(true)
+    expect(matchesSettingsSearch('windows host', entries)).toBe(true)
+    expect(matchesSettingsSearch('wsl', entries)).toBe(true)
+  })
+
+  it('includes file-editor word-wrap and horizontal-scroll keywords', () => {
+    const entries = getGeneralPaneSearchEntries()
+
+    expect(matchesSettingsSearch('editor word wrap', entries)).toBe(true)
+    expect(matchesSettingsSearch('horizontal scroll', entries)).toBe(true)
+  })
+
+  it('includes rich Markdown spellcheck keywords', () => {
+    const entries = getGeneralPaneSearchEntries()
+
+    expect(matchesSettingsSearch('spellcheck', entries)).toBe(true)
+    expect(matchesSettingsSearch('red underline', entries)).toBe(true)
+  })
+
+  it('makes the running-terminal confirmation setting searchable', () => {
+    const entries = getGeneralPaneSearchEntries()
+
+    expect(matchesSettingsSearch('running', entries)).toBe(true)
+  })
+
+  it('omits the default project runtime setting when Windows runtimes are unsupported', () => {
+    const entries = getGeneralPaneSearchEntries({ includeProjectRuntime: false })
+
+    expect(matchesSettingsSearch('default project runtime', entries)).toBe(false)
+    expect(matchesSettingsSearch('windows host', entries)).toBe(false)
+    expect(matchesSettingsSearch('wsl', entries)).toBe(false)
+  })
+})
+
+describe('GeneralPane project runtime section visibility', () => {
+  const entries = getGeneralPaneSearchEntries()
+
+  it('hides the section on non-Windows hosts even with an empty search query', () => {
+    // Regression: matchesSettingsSearch returns true for an empty query, so the
+    // platform gate is what keeps the orphaned header off macOS/Linux.
+    expect(shouldShowProjectRuntimeSection(false, '', [])).toBe(false)
+    expect(shouldShowProjectRuntimeSection(undefined, '', [])).toBe(false)
+  })
+
+  it('shows the section on Windows-capable hosts when entries match', () => {
+    expect(shouldShowProjectRuntimeSection(true, '', entries)).toBe(true)
+    expect(shouldShowProjectRuntimeSection(true, 'wsl', entries)).toBe(true)
+  })
+
+  it('hides the section when a search query excludes the runtime entries', () => {
+    expect(shouldShowProjectRuntimeSection(true, 'zzz-no-match', entries)).toBe(false)
   })
 })

@@ -1,15 +1,24 @@
-import type { Repo } from '../../../shared/types'
+import type { Repo } from '../../../shared/repo-types'
+import { isClipboardTextByteLengthOverLimit } from '../../../shared/clipboard-text'
 
 // Display-name matches must always outrank path-only matches. This offset is
 // added to every path-match score so that even a path hit at index 0 scores
 // higher than the worst possible display-name hit. The value must exceed any
 // realistic displayName length.
 const PATH_SCORE_OFFSET = 1000
+export const REPO_SEARCH_QUERY_MAX_BYTES = 2 * 1024
 
 type RepoMatch = {
   repo: Repo
   score: number
   index: number
+}
+
+export function isRepoSearchQueryTooLarge(
+  query: string,
+  maxBytes = REPO_SEARCH_QUERY_MAX_BYTES
+): boolean {
+  return isClipboardTextByteLengthOverLimit(query, maxBytes)
 }
 
 function matchScore(repo: Repo, query: string): number | null {
@@ -29,8 +38,12 @@ function matchScore(repo: Repo, query: string): number | null {
   return null
 }
 
-export function searchRepos(repos: Repo[], rawQuery: string): Repo[] {
-  const query = rawQuery.trim().toLowerCase()
+export function searchRepos(repos: readonly Repo[], rawQuery: string): readonly Repo[] {
+  if (isRepoSearchQueryTooLarge(rawQuery)) {
+    return []
+  }
+  const trimmedQuery = rawQuery.trim()
+  const query = trimmedQuery.toLowerCase()
   if (!query) {
     return repos
   }

@@ -13,13 +13,17 @@ function getLineageSourceLabel(source: string): string {
     case 'explicit-cli-flag':
       return 'explicit flag'
     case 'active-workspace':
-      return 'active workspace'
+      return 'active context'
     default:
       return 'manual action'
   }
 }
 
-export function printLineageSummary(result: RuntimeWorktreeCreateResult, json: boolean): void {
+export function printLineageSummary(
+  result: Pick<RuntimeWorktreeCreateResult, 'lineage' | 'workspaceLineage'> &
+    Partial<Pick<RuntimeWorktreeCreateResult, 'warnings'>>,
+  json: boolean
+): void {
   if (json) {
     return
   }

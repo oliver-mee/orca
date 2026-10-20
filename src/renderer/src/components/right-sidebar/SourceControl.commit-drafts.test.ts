@@ -1,16 +1,25 @@
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import { buildResolveConflictsPrompt } from './source-control/ai/prompts'
 import {
-  buildResolveConflictsPrompt,
   normalizeSourceControlViewMode,
-  pickDefaultSourceControlAgent,
   readCommitDraftForWorktree,
-  refreshSourceControlAfterRemoteAction,
-  shouldRenderCommitArea,
   writeCommitDraftForWorktree
-} from './SourceControl'
-import { getNextSourceControlViewMode } from './source-control-header-toolbar'
+} from './source-control/commit/commit-drafts'
+import {
+  pickDefaultSourceControlAgent,
+  shouldRenderCommitArea
+} from './source-control/commit/component-gates'
+import { refreshSourceControlAfterRemoteAction } from './source-control/sync/remote-refresh'
+import {
+  loadSessionCommitDrafts,
+  saveSessionCommitDrafts
+} from '@/lib/source-control-commit-draft-session'
 
 describe('SourceControl commit drafts by worktree', () => {
+  afterEach(() => {
+    saveSessionCommitDrafts({})
+  })
+
   it('returns an empty draft when the selected worktree has no message', () => {
     expect(readCommitDraftForWorktree({}, 'wt-a')).toBe('')
   })
@@ -27,6 +36,15 @@ describe('SourceControl commit drafts by worktree', () => {
     // Why: switching back must keep the prior draft for that worktree rather
     // than leaking the active worktree's text into all worktree views.
     expect(readCommitDraftForWorktree(drafts, 'wt-a')).toBe('feat: message for A')
+  })
+
+  it('restores commit drafts after Source Control remounts in the same session', () => {
+    let drafts = loadSessionCommitDrafts()
+
+    drafts = writeCommitDraftForWorktree(drafts, 'wt-a', 'feat: keep draft')
+    saveSessionCommitDrafts(drafts)
+
+    expect(readCommitDraftForWorktree(loadSessionCommitDrafts(), 'wt-a')).toBe('feat: keep draft')
   })
 })
 
@@ -140,10 +158,5 @@ describe('SourceControl view mode preference', () => {
   it('preserves valid persisted view modes', () => {
     expect(normalizeSourceControlViewMode('list')).toBe('list')
     expect(normalizeSourceControlViewMode('tree')).toBe('tree')
-  })
-
-  it('derives the next persisted view mode from the current mode', () => {
-    expect(getNextSourceControlViewMode('list')).toBe('tree')
-    expect(getNextSourceControlViewMode('tree')).toBe('list')
   })
 })

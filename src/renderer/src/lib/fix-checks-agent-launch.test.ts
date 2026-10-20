@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import type * as ExecutionHostFactsModule from '@/lib/execution-host-facts'
 
 const mocks = vi.hoisted(() => {
   const store = {
@@ -20,6 +21,25 @@ const mocks = vi.hoisted(() => {
         path: '/repo/wt-1'
       }
     ],
+    worktreesByRepo: {
+      'repo-1': [
+        {
+          id: 'wt-1',
+          repoId: 'repo-1',
+          path: '/repo/wt-1'
+        }
+      ]
+    },
+    projects: [
+      {
+        id: 'repo-1',
+        displayName: 'Repo',
+        badgeColor: '#000000',
+        sourceRepoIds: ['repo-1'],
+        createdAt: 1,
+        updatedAt: 1
+      }
+    ] as Record<string, unknown>[],
     allWorktrees: vi.fn(() => store.worktrees),
     ensureDetectedAgents: vi.fn(),
     ensureRemoteDetectedAgents: vi.fn()
@@ -35,7 +55,7 @@ const mocks = vi.hoisted(() => {
     pickSourceControlLaunchAgent: vi.fn(),
     readSourceControlLaunchRecipeAgentId: vi.fn(),
     resolveSourceControlActionRecipe: vi.fn(),
-    resolveSourceControlLaunchPlatform: vi.fn(),
+    resolveRepoWorktreeLaunchPlatform: vi.fn(),
     toastError: vi.fn(),
     toastMessage: vi.fn()
   }
@@ -74,14 +94,24 @@ vi.mock('@/lib/launch-work-item-direct', () => ({
   launchWorkItemDirect: mocks.launchWorkItemDirect
 }))
 
-vi.mock('@/lib/source-control-launch-agent-selection', () => ({
+vi.mock('@/lib/new-workspace', () => ({
+  CLIENT_PLATFORM: 'win32'
+}))
+
+vi.mock('../../../shared/source-control-launch-agent-selection', () => ({
   pickSourceControlLaunchAgent: mocks.pickSourceControlLaunchAgent,
   readSourceControlLaunchRecipeAgentId: mocks.readSourceControlLaunchRecipeAgentId
 }))
 
-vi.mock('@/lib/source-control-launch-platform', () => ({
-  resolveSourceControlLaunchPlatform: mocks.resolveSourceControlLaunchPlatform
-}))
+vi.mock('@/lib/execution-host-facts', async () => {
+  const actual = await vi.importActual<typeof ExecutionHostFactsModule>(
+    '@/lib/execution-host-facts'
+  )
+  return {
+    ...actual,
+    resolveRepoWorktreeLaunchPlatform: mocks.resolveRepoWorktreeLaunchPlatform
+  }
+})
 
 vi.mock('@/lib/worktree-activation', () => ({
   activateAndRevealWorktree: mocks.activateAndRevealWorktree
@@ -94,13 +124,39 @@ vi.mock('../../../shared/source-control-ai', () => ({
 describe('startFixChecksAgent', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    mocks.store.repos = [
+      {
+        id: 'repo-1',
+        path: '/repo',
+        displayName: 'Repo',
+        badgeColor: '#000000',
+        addedAt: 1,
+        connectionId: null
+      }
+    ]
     mocks.store.worktrees = [{ id: 'wt-1', repoId: 'repo-1', path: '/repo/wt-1' }]
+    mocks.store.worktreesByRepo = { 'repo-1': mocks.store.worktrees }
+    mocks.store.projects = [
+      {
+        id: 'repo-1',
+        displayName: 'Repo',
+        badgeColor: '#000000',
+        sourceRepoIds: ['repo-1'],
+        createdAt: 1,
+        updatedAt: 1
+      }
+    ]
     mocks.store.ensureDetectedAgents.mockResolvedValue(['codex'])
     mocks.store.ensureRemoteDetectedAgents.mockResolvedValue(['codex'])
     mocks.activateAndRevealWorktree.mockReturnValue(true)
     mocks.findGithubPrWorkspaceAttachment.mockReturnValue(null)
     mocks.getConnectionId.mockReturnValue(null)
-    mocks.launchAgentInNewTab.mockReturnValue({ tabId: 'tab-1' })
+    mocks.launchAgentInNewTab.mockImplementation(
+      (args: { beforeSurfaceOpen?: (surface: { kind: 'local-terminal' }) => boolean | void }) => {
+        args.beforeSurfaceOpen?.({ kind: 'local-terminal' })
+        return { surface: { kind: 'local-terminal', tabId: 'tab-1' } }
+      }
+    )
     mocks.launchWorkItemDirect.mockResolvedValue(true)
     mocks.pickSourceControlLaunchAgent.mockImplementation(({ detectedAgents }) => {
       return detectedAgents.includes('codex') ? 'codex' : null
@@ -109,7 +165,26 @@ describe('startFixChecksAgent', () => {
     mocks.resolveSourceControlActionRecipe.mockReturnValue({
       commandInputTemplate: '{basePrompt}'
     })
-    mocks.resolveSourceControlLaunchPlatform.mockReturnValue('darwin')
+    mocks.resolveRepoWorktreeLaunchPlatform.mockReturnValue('darwin')
+  })
+
+  it('activates the attached workspace as a surface-providing caller', async () => {
+    const { startFixChecksAgent } = await import('./fix-checks-agent-launch')
+
+    await expect(
+      startFixChecksAgent({
+        repoId: 'repo-1',
+        worktreeId: 'wt-1',
+        basePrompt: 'Fix checks',
+        launchSource: 'task_page'
+      })
+    ).resolves.toBe(true)
+
+    // Why: launchAgentInNewTab creates the surface; without the opt-out, activation would
+    // also re-seed a shell in a closed-last-terminal workspace.
+    expect(mocks.activateAndRevealWorktree).toHaveBeenCalledWith('wt-1', {
+      providesInitialSurface: true
+    })
   })
 
   it('fails without launching when the requested worktree is missing', async () => {
@@ -145,6 +220,7 @@ describe('startFixChecksAgent', () => {
   })
 
   it('rejects without launching when remote agent detection fails', async () => {
+    mocks.store.repos = [{ ...mocks.store.repos[0], connectionId: 'conn-1' }]
     mocks.getConnectionId.mockReturnValue('conn-1')
     mocks.store.ensureRemoteDetectedAgents.mockRejectedValue(new Error('detection failed'))
     const { startFixChecksAgent } = await import('./fix-checks-agent-launch')
@@ -161,7 +237,7 @@ describe('startFixChecksAgent', () => {
     expect(mocks.launchAgentInNewTab).not.toHaveBeenCalled()
   })
 
-  it('falls back to the repo connection when an attached workspace lookup is unresolved', async () => {
+  it("resolves the attached workspace's own execution host", async () => {
     mocks.store.repos = [
       {
         ...mocks.store.repos[0],
@@ -181,14 +257,33 @@ describe('startFixChecksAgent', () => {
     ).resolves.toBe(true)
 
     expect(mocks.store.ensureRemoteDetectedAgents).toHaveBeenCalledWith('ssh-1')
-    expect(mocks.resolveSourceControlLaunchPlatform).toHaveBeenCalledWith({
-      connectionId: 'ssh-1',
-      worktreePath: '/repo/wt-1'
-    })
+    expect(mocks.resolveRepoWorktreeLaunchPlatform).toHaveBeenCalledWith(
+      mocks.store,
+      expect.objectContaining({ id: 'repo-1', connectionId: 'ssh-1' }),
+      expect.objectContaining({ id: 'wt-1', path: '/repo/wt-1' })
+    )
   })
 
-  it('fails without launching when the launch platform cannot be resolved', async () => {
-    mocks.resolveSourceControlLaunchPlatform.mockReturnValue(undefined)
+  it("plans a Linux server's launch for that server from a Windows client (#27971)", async () => {
+    mocks.resolveRepoWorktreeLaunchPlatform.mockReturnValue('linux')
+    const { startFixChecksAgent } = await import('./fix-checks-agent-launch')
+
+    await expect(
+      startFixChecksAgent({
+        repoId: 'repo-1',
+        worktreeId: 'wt-1',
+        basePrompt: 'Fix checks',
+        launchSource: 'task_page'
+      })
+    ).resolves.toBe(true)
+
+    expect(mocks.launchAgentInNewTab).toHaveBeenCalledWith(
+      expect.objectContaining({ launchPlatform: 'linux' })
+    )
+  })
+
+  it('fails without launching when the execution host has not reported its OS', async () => {
+    mocks.resolveRepoWorktreeLaunchPlatform.mockReturnValue(undefined)
     const { startFixChecksAgent } = await import('./fix-checks-agent-launch')
 
     await expect(

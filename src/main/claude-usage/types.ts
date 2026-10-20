@@ -3,6 +3,8 @@ export type ClaudeUsageProcessedFile = {
   mtimeMs: number
   size: number
   lineCount: number
+  physicalFileId?: string | null
+  ctimeMs?: number
 }
 
 export type ClaudeUsageLocationBreakdown = {
@@ -15,6 +17,9 @@ export type ClaudeUsageLocationBreakdown = {
   outputTokens: number
   cacheReadTokens: number
   cacheWriteTokens: number
+  cacheWrite1hTokens: number
+  /** Subset of the totals from requests over the model's long-context threshold; see ClaudeBillableTokens. */
+  longContext?: ClaudeUsageTokenTotals
 }
 
 export type ClaudeUsageSession = {
@@ -31,6 +36,7 @@ export type ClaudeUsageSession = {
   totalOutputTokens: number
   totalCacheReadTokens: number
   totalCacheWriteTokens: number
+  totalCacheWrite1hTokens: number
   locationBreakdown: ClaudeUsageLocationBreakdown[]
 }
 
@@ -47,10 +53,14 @@ export type ClaudeUsageDailyAggregate = {
   outputTokens: number
   cacheReadTokens: number
   cacheWriteTokens: number
+  cacheWrite1hTokens: number
+  /** Subset of the totals from requests over the model's long-context threshold; see ClaudeBillableTokens. */
+  longContext?: ClaudeUsageTokenTotals
 }
 
 export type ClaudeUsagePersistedState = {
   schemaVersion: number
+  usageIntegrity?: string
   worktreeFingerprint: string | null
   processedFiles: ClaudeUsagePersistedFile[]
   sessions: ClaudeUsageSession[]
@@ -66,6 +76,17 @@ export type ClaudeUsagePersistedState = {
 export type ClaudeUsagePersistedFile = ClaudeUsageProcessedFile & {
   sessions: ClaudeUsageSession[]
   dailyAggregates: ClaudeUsageDailyAggregate[]
+  /** Dedupe keys (message.id:requestId) this file counted. Forked/resumed
+   *  sessions copy earlier turns into new files; ownership keeps each turn
+   *  counted by exactly one cached file across incremental scans. */
+  ownedDedupeKeys: string[]
+  /** True when this file saw turns already claimed by another file. When that
+   *  owner disappears, only deferred files need reparse to reclaim — not the
+   *  entire transcript corpus. */
+  hasDeferredClaims: boolean
+  parseResumeState?: ClaudeUsageParseResumeState | null
+  /** CLAUDE_USAGE_PROJECTION_VERSION that built `sessions` and `dailyAggregates`; any other value reparses the file. */
+  projectionVersion?: number
 }
 
 export type ClaudeUsageParsedTurn = {
@@ -78,6 +99,8 @@ export type ClaudeUsageParsedTurn = {
   outputTokens: number
   cacheReadTokens: number
   cacheWriteTokens: number
+  /** 1-hour-TTL subset of `cacheWriteTokens`; billed at 2x base input. */
+  cacheWrite1hTokens: number
 }
 
 export type ClaudeUsageAttributedTurn = ClaudeUsageParsedTurn & {
@@ -86,4 +109,34 @@ export type ClaudeUsageAttributedTurn = ClaudeUsageParsedTurn & {
   projectLabel: string
   repoId: string | null
   worktreeId: string | null
+}
+import type { JsonlFileCheckpoint } from '../usage/jsonl-file-checkpoint'
+
+export type ClaudeUsageTokenTotals = Pick<
+  ClaudeUsageParsedTurn,
+  'inputTokens' | 'outputTokens' | 'cacheReadTokens' | 'cacheWriteTokens' | 'cacheWrite1hTokens'
+>
+
+export type ClaudeUsageTurnProjection = {
+  sessionId: string
+  day: string
+  model: string | null
+  projectKey: string
+}
+
+export type ClaudeUsageTokenMaxima = [
+  inputTokens: number,
+  outputTokens: number,
+  cacheReadTokens: number,
+  cacheWriteTokens: number,
+  cacheWrite1hTokens: number,
+  projectionIndex: number | null
+]
+
+export type ClaudeUsageParseResumeState = JsonlFileCheckpoint & {
+  lineCount: number
+  ownedTokenMaxima: ClaudeUsageTokenMaxima[]
+  projections: ClaudeUsageTurnProjection[]
+  encounterOrder: { sessionId: string; projectKeys: string[] }[]
+  projectionIntegrity?: string
 }

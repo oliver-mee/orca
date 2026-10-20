@@ -9,6 +9,14 @@ import { activateTabAndFocusPane } from '@/lib/activate-tab-and-focus-pane'
 import { useDaemonActions, DaemonActionDialog } from '../shared/useDaemonActions'
 import { ManageSessionKillDialog } from './ManageSessionKillDialog'
 import { ManageSessionsTable } from './ManageSessionsTable'
+import {
+  notifyDaemonSessionInventoryInvalidated,
+  subscribeDaemonSessionInventoryInvalidated
+} from '../status-bar/daemon-session-inventory-invalidation'
+import {
+  MANAGE_SESSIONS_SECTION_ID,
+  TerminalTccAttributionNotice
+} from './TerminalTccAttributionNotice'
 import { translate } from '@/i18n/i18n'
 
 type ConfirmKind = 'killOne'
@@ -19,9 +27,11 @@ export function ManageSessionsSection(): React.JSX.Element {
   const [hasLoadedOnce, setHasLoadedOnce] = useState(false)
   const [pendingKillSession, setPendingKillSession] = useState<PtyManagementSession | null>(null)
   const [busyKind, setBusyKind] = useState<ConfirmKind | null>(null)
+  const [attributionRefreshRevision, setAttributionRefreshRevision] = useState(0)
   const optimisticRollback = useRef<PtyManagementSession[] | null>(null)
   const isMounted = useRef(true)
   const mutationInFlight = useRef(false)
+  const notifyingOwnInvalidation = useRef(false)
 
   const tabsByWorktree = useAppStore((s) => s.tabsByWorktree)
   const ptyIdsByTabId = useAppStore((s) => s.ptyIdsByTabId)
@@ -103,6 +113,29 @@ export function ManageSessionsSection(): React.JSX.Element {
     void refresh()
   }, [refresh])
 
+  // Why: this section stays mounted for a whole settings search, so a kill routed through
+  // another surface (status-bar Kill All) must reach the table through the invalidation
+  // signal rather than a remount. Own mutations already read on settle.
+  useEffect(
+    () =>
+      subscribeDaemonSessionInventoryInvalidated(() => {
+        if (notifyingOwnInvalidation.current || mutationInFlight.current) {
+          return
+        }
+        void refresh()
+      }),
+    [refresh]
+  )
+
+  const notifyForeignSurfaces = useCallback((): void => {
+    notifyingOwnInvalidation.current = true
+    try {
+      notifyDaemonSessionInventoryInvalidated()
+    } finally {
+      notifyingOwnInvalidation.current = false
+    }
+  }, [])
+
   const sessionCount = sessions.length
 
   const daemonActions = useDaemonActions({
@@ -122,6 +155,8 @@ export function ManageSessionsSection(): React.JSX.Element {
       void refresh()
     },
     onRestartSettled: () => {
+      notifyForeignSurfaces()
+      setAttributionRefreshRevision((revision) => revision + 1)
       void refresh()
     }
   })
@@ -150,6 +185,7 @@ export function ManageSessionsSection(): React.JSX.Element {
           )
         }
         mutationInFlight.current = false
+        notifyForeignSurfaces()
         await refresh()
       } catch (err) {
         toast.error(
@@ -169,7 +205,7 @@ export function ManageSessionsSection(): React.JSX.Element {
         }
       }
     },
-    [refresh]
+    [notifyForeignSurfaces, refresh]
   )
 
   const runConfirmed = useCallback(() => {
@@ -203,7 +239,12 @@ export function ManageSessionsSection(): React.JSX.Element {
         description={getManageSessionsSearchEntries()[0].description}
         keywords={getManageSessionsSearchEntries()[0].keywords}
         className="space-y-3"
+        id={MANAGE_SESSIONS_SECTION_ID}
       >
+        <TerminalTccAttributionNotice
+          showManageSessionsButton={false}
+          refreshRevision={attributionRefreshRevision}
+        />
         <ManageSessionsTable
           sessions={sessions}
           hasLoadedOnce={hasLoadedOnce}

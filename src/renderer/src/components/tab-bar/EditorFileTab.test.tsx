@@ -9,9 +9,17 @@ const reactHookRuntime = vi.hoisted(() => ({
 const appStoreMocks = vi.hoisted(() => ({
   openMarkdownPreview: vi.fn(),
   getState: vi.fn(() => ({
-    settings: {}
+    settings: {},
+    unifiedTabsByWorktree: {
+      'wt-1': [{ id: '/repo/untitled-5.md', groupId: 'group-1' }]
+    },
+    groupsByWorktree: {
+      'wt-1': [{ id: 'group-1', tabOrder: ['/repo/untitled-5.md', 'tab-2'] }]
+    }
   }))
 }))
+
+const renameFileOnDiskMock = vi.hoisted(() => vi.fn())
 
 vi.mock('react', async () => {
   const actual = await vi.importActual<typeof import('react')>('react') // eslint-disable-line @typescript-eslint/consistent-type-imports -- vi.importActual requires inline import()
@@ -41,6 +49,10 @@ vi.mock('react', async () => {
   }
 })
 
+vi.mock('./use-tab-strip-slot-props', () => ({
+  useTabStripSlotProps: () => ({ className: '', 'data-tab-strip-slot': '' })
+}))
+
 vi.mock('@dnd-kit/sortable', () => ({
   useSortable: () => ({
     attributes: {},
@@ -50,8 +62,26 @@ vi.mock('@dnd-kit/sortable', () => ({
 }))
 
 vi.mock('lucide-react', () => ({
+  ArrowDown: function ArrowDown(props: Record<string, unknown>) {
+    return { type: 'ArrowDown', props }
+  },
+  ArrowLeft: function ArrowLeft(props: Record<string, unknown>) {
+    return { type: 'ArrowLeft', props }
+  },
+  ArrowRight: function ArrowRight(props: Record<string, unknown>) {
+    return { type: 'ArrowRight', props }
+  },
+  ArrowUp: function ArrowUp(props: Record<string, unknown>) {
+    return { type: 'ArrowUp', props }
+  },
   Columns2: function Columns2(props: Record<string, unknown>) {
     return { type: 'Columns2', props }
+  },
+  CopyX: function CopyX(props: Record<string, unknown>) {
+    return { type: 'CopyX', props }
+  },
+  PanelLeftClose: function PanelLeftClose(props: Record<string, unknown>) {
+    return { type: 'PanelLeftClose', props }
   },
   Copy: function Copy(props: Record<string, unknown>) {
     return { type: 'Copy', props }
@@ -61,6 +91,12 @@ vi.mock('lucide-react', () => ({
   },
   Eye: function Eye(props: Record<string, unknown>) {
     return { type: 'Eye', props }
+  },
+  ListX: function ListX(props: Record<string, unknown>) {
+    return { type: 'ListX', props }
+  },
+  PanelRightClose: function PanelRightClose(props: Record<string, unknown>) {
+    return { type: 'PanelRightClose', props }
   },
   GitCompareArrows: function GitCompareArrows(props: Record<string, unknown>) {
     return { type: 'GitCompareArrows', props }
@@ -101,6 +137,18 @@ vi.mock('@/components/ui/dropdown-menu', () => ({
   DropdownMenuShortcut: function DropdownMenuShortcut(props: { children?: unknown }) {
     return { type: 'DropdownMenuShortcut', props }
   },
+  DropdownMenuLabel: function DropdownMenuLabel(props: { children?: unknown }) {
+    return { type: 'DropdownMenuLabel', props }
+  },
+  DropdownMenuSub: function DropdownMenuSub(props: { children?: unknown }) {
+    return { type: 'DropdownMenuSub', props }
+  },
+  DropdownMenuSubContent: function DropdownMenuSubContent(props: { children?: unknown }) {
+    return { type: 'DropdownMenuSubContent', props }
+  },
+  DropdownMenuSubTrigger: function DropdownMenuSubTrigger(props: { children?: unknown }) {
+    return { type: 'DropdownMenuSubTrigger', props }
+  },
   DropdownMenuTrigger: function DropdownMenuTrigger(props: { children?: unknown }) {
     return { type: 'DropdownMenuTrigger', props }
   }
@@ -113,6 +161,9 @@ vi.mock('@/components/ui/input', () => ({
 }))
 
 vi.mock('@/components/ui/tooltip', () => ({
+  TooltipProvider: function TooltipProvider(props: { children?: unknown }) {
+    return props.children
+  },
   Tooltip: function Tooltip(props: { children?: unknown }) {
     return { type: 'Tooltip', props }
   },
@@ -124,12 +175,18 @@ vi.mock('@/components/ui/tooltip', () => ({
   }
 }))
 
+vi.mock('./TabHoverCard', () => ({
+  TabHoverCard: function TabHoverCard(props: { children?: unknown }) {
+    return props.children
+  }
+}))
+
 vi.mock('@/components/editor/editor-labels', () => ({
   getEditorDisplayLabel: (file: OpenFile) => file.relativePath
 }))
 
 vi.mock('@/lib/rename-file', () => ({
-  renameFileOnDisk: vi.fn()
+  renameFileOnDisk: renameFileOnDiskMock
 }))
 
 vi.mock('@/lib/file-type-icons', () => ({
@@ -156,10 +213,6 @@ vi.mock('../right-sidebar/status-display', () => ({
   STATUS_LABELS: {}
 }))
 
-vi.mock('./SortableTab', () => ({
-  CLOSE_ALL_CONTEXT_MENUS_EVENT: 'orca-close-all-context-menus'
-}))
-
 vi.mock('./drop-indicator', () => ({
   ACTIVE_TAB_INDICATOR_CLASSES: 'active-tab-indicator',
   getDropIndicatorClasses: () => '',
@@ -169,11 +222,6 @@ vi.mock('./drop-indicator', () => ({
 
 vi.mock('@/components/editor/markdown-preview-controls', () => ({
   canOpenMarkdownPreview: () => false
-}))
-
-vi.mock('@/lib/local-path-open-guard', () => ({
-  shouldBlockEditorTabLocalOpen: () => false,
-  showLocalPathOpenBlockedToast: vi.fn()
 }))
 
 type ReactElementLike = {
@@ -210,14 +258,17 @@ async function renderEditorFileTab(
     isActive: true,
     isPinned: false,
     hasTabsToRight: false,
-    statusByRelativePath: new Map(),
+    hasTabsToLeft: false,
+    tabCount: 1,
+    gitStatus: null,
     onActivate,
     onClose: () => {},
+    onCloseOthers: () => {},
     onCloseToRight: () => {},
+    onCloseToLeft: () => {},
     onCloseAll: () => {},
     onMakePermanent,
     onTogglePin: () => {},
-    onSplitGroup: () => {},
     dragData: {
       kind: 'tab',
       worktreeId: file.worktreeId,
@@ -298,6 +349,15 @@ function findMenuItemByText(node: unknown, label: string): ReactElementLike {
   return item
 }
 
+/** Picks Rename, then fires the close-autofocus that actually opens the input. */
+function selectRenameFromMenu(node: unknown): void {
+  ;(findMenuItemByText(node, 'Rename').props.onSelect as () => void)()
+  const content = findElementsByType(node, 'DropdownMenuContent')[0]!
+  ;(content.props.onCloseAutoFocus as (event: { preventDefault: () => void }) => void)({
+    preventDefault: vi.fn()
+  })
+}
+
 function findSpanByText(node: unknown, label: string): ReactElementLike {
   const span = findElementsByType(node, 'span').find(
     (candidate) =>
@@ -307,6 +367,27 @@ function findSpanByText(node: unknown, label: string): ReactElementLike {
     throw new Error(`Missing span: ${label}`)
   }
   return span
+}
+
+function pressInputKey(
+  input: ReactElementLike,
+  key: string,
+  options?: { isComposing?: boolean; keyCode?: number }
+): {
+  preventDefault: ReturnType<typeof vi.fn>
+  stopPropagation: ReturnType<typeof vi.fn>
+} {
+  const event = {
+    key,
+    nativeEvent: {
+      isComposing: options?.isComposing ?? false,
+      keyCode: options?.keyCode ?? 13
+    },
+    preventDefault: vi.fn(),
+    stopPropagation: vi.fn()
+  }
+  ;(input.props.onKeyDown as (nextEvent: typeof event) => void)(event)
+  return event
 }
 
 describe('EditorFileTab rename menu', () => {
@@ -333,7 +414,7 @@ describe('EditorFileTab rename menu', () => {
     // isUntitled; the tab menu must let users rename the screenshot-style
     // "untitled-N.md" files directly.
     expect(renameItem.props.disabled).toBe(false)
-    ;(renameItem.props.onSelect as () => void)()
+    selectRenameFromMenu(firstRender)
 
     const secondRender = expandNode((await renderEditorFileTab(file, onActivate)).element)
     const inputs = findElementsByType(secondRender, 'input')
@@ -352,6 +433,61 @@ describe('EditorFileTab rename menu', () => {
     expect(focus).toHaveBeenCalledTimes(1)
     expect(setSelectionRange).toHaveBeenCalledWith(0, 'untitled-5'.length)
     expect(select).not.toHaveBeenCalled()
+  })
+
+  it('ignores IME composition Enter before renaming the editor file tab', async () => {
+    const file = baseFile()
+    const firstRender = expandNode((await renderEditorFileTab(file)).element)
+
+    selectRenameFromMenu(firstRender)
+
+    const secondRender = expandNode((await renderEditorFileTab(file)).element)
+    const input = findElementsByType(secondRender, 'input')[0]
+    const setInputRef = input.props.ref as (input: HTMLInputElement | null) => void
+    setInputRef({
+      focus: vi.fn(),
+      select: vi.fn(),
+      setSelectionRange: vi.fn(),
+      value: '日本語.md'
+    } as unknown as HTMLInputElement)
+
+    const composingEvent = pressInputKey(input, 'Enter', { isComposing: true })
+
+    expect(composingEvent.preventDefault).not.toHaveBeenCalled()
+    expect(renameFileOnDiskMock).not.toHaveBeenCalled()
+
+    pressInputKey(input, 'Enter')
+
+    expect(renameFileOnDiskMock).toHaveBeenCalledWith({
+      oldPath: '/repo/untitled-5.md',
+      newName: '日本語.md',
+      worktreeId: 'wt-1',
+      worktreePath: '/repo',
+      documentScoped: false
+    })
+  })
+
+  it('does not re-commit when unmounting the rename input emits multiple blur events', async () => {
+    const file = baseFile()
+    const firstRender = expandNode((await renderEditorFileTab(file)).element)
+
+    selectRenameFromMenu(firstRender)
+
+    const secondRender = expandNode((await renderEditorFileTab(file)).element)
+    const input = findElementsByType(secondRender, 'input')[0]
+    const setInputRef = input.props.ref as (input: HTMLInputElement | null) => void
+    setInputRef({
+      focus: vi.fn(),
+      select: vi.fn(),
+      setSelectionRange: vi.fn(),
+      value: 'renamed.md'
+    } as unknown as HTMLInputElement)
+
+    pressInputKey(input, 'Enter')
+    ;(input.props.onBlur as () => void)()
+    ;(input.props.onBlur as () => void)()
+
+    expect(renameFileOnDiskMock).toHaveBeenCalledTimes(1)
   })
 
   it('disables Rename for diff tabs that do not map to one writable file', async () => {

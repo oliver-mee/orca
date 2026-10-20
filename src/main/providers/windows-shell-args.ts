@@ -1,15 +1,47 @@
-import { win32 as pathWin32 } from 'path'
+import { win32 as pathWin32 } from 'node:path'
 import { isWindowsGitBashShellPath } from '../git-bash'
 import { parseWslPath, toLinuxPath, toWindowsWslPath } from '../wsl'
 import {
-  buildWslInteractiveLoginShellCommand,
-  escapeWslShCommandForWindows,
-  quotePosixShell
+  buildWslExecArgs,
+  buildWslInteractiveLoginShellCommand
 } from '../../shared/wsl-login-shell-command'
+import { quotePosixShell } from '../../shared/shell-argument-quoting'
+import { getBashWrapperLaunchArgs } from './local-pty-shell-ready'
+import { ensureShellReadyWrappersAt } from './local-pty-shell-ready-wrapper-generation'
 import {
   encodePowerShellCommand,
   getPowerShellOsc133Bootstrap
 } from '../powershell-osc133-bootstrap'
+import { quoteStartupArg } from '../../shared/tui-agent-startup-shell'
+
+/** cmd.exe's own documented ceiling; callers that go through sshd budget below it. */
+export const CMD_EXE_COMMAND_LINE_MAX_CHARS = 8191
+const STARTUP_COMMAND_TEXT_MAX_CHARS = 6000
+const POWERSHELL_ENCODED_COMMAND_ARG_MAX_CHARS = 28_000
+const CMD_UTF8_SETUP_COMMAND = 'chcp 65001 > nul'
+export const ORCA_CODEX_LAUNCH_PREFLIGHT_CMD_QUOTE_ENV = 'ORCA_CODEX_LAUNCH_PREFLIGHT_CMD_QUOTE'
+const CMD_CODEX_LAUNCH_PREFLIGHT = `if defined ORCA_CODEX_LAUNCH_PREFLIGHT call %${ORCA_CODEX_LAUNCH_PREFLIGHT_CMD_QUOTE_ENV}%%ORCA_CODEX_LAUNCH_PREFLIGHT%%${ORCA_CODEX_LAUNCH_PREFLIGHT_CMD_QUOTE_ENV}% agent hooks prepare-codex > nul 2>&1`
+// Why: Git for Windows' bash inherits the ConPTY console's OEM code page
+// (CP437), so a TUI that writes UTF-8 bytes straight to the console — agents
+// like Claude Code use WriteFile, not WriteConsoleW — renders as mojibake
+// (`❯` -> `Γ¥»`). Switch the console to UTF-8, then exec the normal interactive
+// login shell; cmd.exe and PowerShell already do the equivalent. The `;` (not
+// `&&`) keeps startup working even if chcp.com is missing.
+const GIT_BASH_UTF8_LOGIN_COMMAND = 'chcp.com 65001 >/dev/null 2>&1; exec "$BASH" --login -i'
+
+// Why every pane gets the rcfile: it defines the claude function that follows the selected
+// account (and the codex wrapper), as bash panes elsewhere get; it sources the login chain itself.
+function getGitBashLaunchCommand(): string {
+  ensureShellReadyWrappersAt()
+  const wrapperArgs = getBashWrapperLaunchArgs()
+  if (!wrapperArgs) {
+    return GIT_BASH_UTF8_LOGIN_COMMAND
+  }
+  const bashArgs = [...wrapperArgs, '-i']
+    .map((arg) => (arg.startsWith('-') ? arg : quotePosixShell(arg.replace(/\\/g, '/'))))
+    .join(' ')
+  return `chcp.com 65001 >/dev/null 2>&1; exec "$BASH" ${bashArgs}`
+}
 
 /** Result of resolving a Windows shell to its launch args + effective cwd.
  *
@@ -21,6 +53,9 @@ import {
  *  decision here keeps both paths honest. */
 export type WindowsShellLaunchArgs = {
   shellArgs: string[]
+  /** True when the startup command was embedded in shellArgs and must not be
+   *  written again through stdin. */
+  startupCommandDeliveredInShellArgs?: boolean
   /** The cwd node-pty should be spawned with. WSL cannot cd into a Windows
    *  path, so the wsl.exe branch returns the user's home as the effective cwd
    *  and injects `cd '<linux path>'` into shellArgs instead. */
@@ -36,7 +71,73 @@ export type WindowsShellWslContext = {
   treatPosixCwdAsWsl?: boolean
 }
 
+/**
+ * Returns a startup command that is safe to embed in cmd.exe launch args.
+ *
+ * Commands that could exceed Windows cmd.exe limits return null so callers
+ * keep the older stdin delivery path.
+ */
+function getCmdShellArgStartupCommand(command?: string): string | null {
+  if (!command || command.length > STARTUP_COMMAND_TEXT_MAX_CHARS) {
+    return null
+  }
+  // Why: node-pty's C-runtime argv escaping changes normal cmd quotes in `/K`
+  // delivery, while the interactive parser preserves them through stdin.
+  if (command.includes('"')) {
+    return null
+  }
+  const commandArg = `${CMD_UTF8_SETUP_COMMAND} & ${command}`
+  if (commandArg.length > CMD_EXE_COMMAND_LINE_MAX_CHARS) {
+    return null
+  }
+  return command
+}
+
+/**
+ * Builds the PowerShell -EncodedCommand payload for startup bootstrap.
+ *
+ * Short startup commands are appended to the bootstrap and marked as delivered;
+ * large payloads return the bootstrap alone so stdin delivery remains available.
+ */
+function getPowerShellRestoreCwdCommand(cwd: string): string {
+  // Why: profiles can change location, so restore the PTY cwd after profile loading.
+  return [
+    '',
+    `try { Set-Location -LiteralPath ${quoteStartupArg(cwd, 'powershell')} -ErrorAction Stop } catch { Write-Warning "Failed to restore working directory: $_" }`
+  ].join('\n')
+}
+
+function getPowerShellEncodedCommand(
+  cwd: string,
+  startupCommand?: string
+): {
+  encodedCommand: string
+  startupCommandDeliveredInShellArgs?: boolean
+} {
+  const bootstrap = `${getPowerShellOsc133Bootstrap()}${getPowerShellRestoreCwdCommand(cwd)}`
+  if (!startupCommand || startupCommand.length > STARTUP_COMMAND_TEXT_MAX_CHARS) {
+    return { encodedCommand: encodePowerShellCommand(bootstrap) }
+  }
+
+  const command = `${bootstrap}\n${startupCommand}`
+  const encodedCommand = encodePowerShellCommand(command)
+  // Why: -EncodedCommand expands UTF-16 text into base64; keep a conservative
+  // margin under Windows CreateProcess' 32,767-character command line limit.
+  if (encodedCommand.length > POWERSHELL_ENCODED_COMMAND_ARG_MAX_CHARS) {
+    return { encodedCommand: encodePowerShellCommand(bootstrap) }
+  }
+
+  return {
+    encodedCommand,
+    startupCommandDeliveredInShellArgs: true
+  }
+}
+
+/**
+ * Builds wsl.exe arguments that enter the target directory through the distro shell.
+ */
 function buildWslShellArgs(linuxCwd: string, distro?: string): string[] {
+  ensureShellReadyWrappersAt()
   const setupCommand = [
     `cd ${quotePosixShell(linuxCwd)}`,
     'export PATH="$HOME/.local/bin:$PATH"',
@@ -44,8 +145,21 @@ function buildWslShellArgs(linuxCwd: string, distro?: string): string[] {
   ].join(' && ')
   // Why: WSL users often customize zsh rather than bash; launch the distro's
   // login shell so terminal PATH matches the environment Orca detects.
-  const shellArgs = ['--', 'sh', '-c', escapeWslShCommandForWindows(setupCommand)]
-  return distro ? ['-d', distro, ...shellArgs] : shellArgs
+  return buildWslExecArgs(distro, ['sh', '-c', setupCommand])
+}
+
+/** Converts an MSYS drive spelling to the native cwd used by Windows terminal processes. */
+export function normalizeWindowsTerminalCwd(cwd: string): string {
+  const match = cwd.match(/^\/([A-Za-z])(?:\/(.*))?$/)
+  if (!match) {
+    return cwd
+  }
+
+  // Why: Git Bash/MSYS launch contexts can hand Windows terminals `/d/repo`;
+  // ConPTY requires the equivalent native drive path as its cwd.
+  const driveLetter = match[1].toUpperCase()
+  const rest = match[2]?.replace(/\//g, '\\') ?? ''
+  return rest ? `${driveLetter}:\\${rest}` : `${driveLetter}:\\`
 }
 
 /** Build the argv + effective cwd for a Windows shell launch.
@@ -61,38 +175,48 @@ export function resolveWindowsShellLaunchArgs(
   shellPath: string,
   cwd: string,
   defaultCwd: string,
-  wslContext?: WindowsShellWslContext
+  wslContext?: WindowsShellWslContext,
+  startupCommand?: string,
+  codexLaunchPreflightCommand?: string
 ): WindowsShellLaunchArgs {
   const shellBasename = pathWin32.basename(shellPath).toLowerCase()
+  const nativeCwd = normalizeWindowsTerminalCwd(cwd)
 
   if (shellBasename === 'cmd.exe') {
+    const shellArgStartupCommand = getCmdShellArgStartupCommand(startupCommand)
+    const startupCommands = [
+      CMD_UTF8_SETUP_COMMAND,
+      ...(codexLaunchPreflightCommand ? [CMD_CODEX_LAUNCH_PREFLIGHT] : []),
+      ...(shellArgStartupCommand ? [shellArgStartupCommand] : [])
+    ]
     return {
-      shellArgs: ['/K', 'chcp 65001 > nul'],
-      effectiveCwd: cwd,
-      validationCwd: cwd
+      shellArgs: ['/K', startupCommands.join(' & ')],
+      ...(shellArgStartupCommand ? { startupCommandDeliveredInShellArgs: true } : {}),
+      effectiveCwd: nativeCwd,
+      validationCwd: nativeCwd
     }
   }
 
   if (shellBasename === 'powershell.exe' || shellBasename === 'pwsh.exe') {
+    const powerShellCommand = getPowerShellEncodedCommand(nativeCwd, startupCommand)
     // Why: foreground-process status on Windows depends on OSC 133 C/D, and
     // PowerShell needs a prompt/readline bootstrap after profiles finish.
+    // Why base64 and not -Command: see powershell-osc133-bootstrap.ts (MDE review).
     return {
-      shellArgs: [
-        '-NoLogo',
-        '-NoExit',
-        '-EncodedCommand',
-        encodePowerShellCommand(getPowerShellOsc133Bootstrap())
-      ],
-      effectiveCwd: cwd,
-      validationCwd: cwd
+      shellArgs: ['-NoLogo', '-NoExit', '-EncodedCommand', powerShellCommand.encodedCommand],
+      ...(powerShellCommand.startupCommandDeliveredInShellArgs
+        ? { startupCommandDeliveredInShellArgs: true }
+        : {}),
+      effectiveCwd: nativeCwd,
+      validationCwd: nativeCwd
     }
   }
 
   if (isWindowsGitBashShellPath(shellPath)) {
     return {
-      shellArgs: ['--login', '-i'],
-      effectiveCwd: cwd,
-      validationCwd: cwd
+      shellArgs: ['-c', getGitBashLaunchCommand()],
+      effectiveCwd: nativeCwd,
+      validationCwd: nativeCwd
     }
   }
 
@@ -112,18 +236,18 @@ export function resolveWindowsShellLaunchArgs(
         validationCwd: toWindowsWslPath(cwd, wslContext.distro)
       }
     }
-    const driveMatch = cwd.replace(/\\/g, '/').match(/^([A-Za-z]):\/?(.*)$/)
-    const linuxCwd = driveMatch ? toLinuxPath(cwd) : '/mnt/c'
+    const driveMatch = nativeCwd.replace(/\\/g, '/').match(/^([A-Za-z]):\/?(.*)$/)
+    const linuxCwd = driveMatch ? toLinuxPath(nativeCwd) : '/mnt/c'
     return {
       shellArgs: buildWslShellArgs(linuxCwd, wslContext?.distro),
       effectiveCwd: defaultCwd,
-      validationCwd: cwd
+      validationCwd: nativeCwd
     }
   }
 
   return {
     shellArgs: [],
-    effectiveCwd: cwd,
-    validationCwd: cwd
+    effectiveCwd: nativeCwd,
+    validationCwd: nativeCwd
   }
 }

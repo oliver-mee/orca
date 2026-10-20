@@ -1,12 +1,13 @@
 import type { JSX } from 'react'
-import { ORCA_CLI_SKILL_INSTALL_COMMAND } from '@/lib/agent-feature-install-commands'
 import {
-  AGENT_SKILL_CLI_PREREQUISITE_NOTICE,
-  ensureOrcaCliAvailableForAgentSkillTerminal
-} from '@/lib/agent-skill-cli-prerequisite'
+  ORCA_CLI_SKILL_INSTALL_COMMAND,
+  ORCA_CLI_SKILL_NAME
+} from '@/lib/agent-feature-install-commands'
 import { BROWSER_USE_ENABLED_STORAGE_KEY } from '@/lib/browser-use-setup-state'
 import type { InstalledAgentSkillState } from '@/hooks/useInstalledAgentSkills'
+import { useActiveProjectSkillRuntime } from '@/hooks/useActiveProjectSkillRuntime'
 import { AgentSkillSetupPanel } from '@/components/settings/AgentSkillSetupPanel'
+import { buildSkillCommandForRuntime } from '@/components/settings/CliSkillRuntimeSetup'
 import { useAppStore } from '@/store'
 import { translate } from '@/i18n/i18n'
 
@@ -16,10 +17,13 @@ export function BrowserUseSkillSetupCard(props: {
   skill: InstalledAgentSkillState
 }): JSX.Element {
   const { compact, terminalHeightPx, skill } = props
+  const activeSkillRuntime = useActiveProjectSkillRuntime()
+  const installCommand = !activeSkillRuntime.installDisabledReason
+    ? buildSkillCommandForRuntime(ORCA_CLI_SKILL_INSTALL_COMMAND, activeSkillRuntime.agentRuntime)
+    : ORCA_CLI_SKILL_INSTALL_COMMAND
 
-  const handleBeforeOpenTerminal = async (): Promise<void> => {
+  const handleBeforeOpenTerminal = (): void => {
     useAppStore.getState().recordFeatureInteraction('agent-browser-setup')
-    await ensureOrcaCliAvailableForAgentSkillTerminal()
     localStorage.setItem(BROWSER_USE_ENABLED_STORAGE_KEY, '1')
   }
 
@@ -34,18 +38,23 @@ export function BrowserUseSkillSetupCard(props: {
         'auto.components.feature.wall.BrowserUseSkillSetupCard.cbc45022d4',
         "Enables agents to navigate and verify pages in Orca's browser."
       )}
-      command={ORCA_CLI_SKILL_INSTALL_COMMAND}
+      command={installCommand}
       terminalTitle="Browser Use setup"
       terminalAriaLabel="Browser Use skill install terminal"
       terminalWorktreeId="feature-wall-browser-use-skill-terminal"
+      terminalShellOverride={activeSkillRuntime.terminalShellOverride}
+      terminalRuntime={activeSkillRuntime.agentRuntime}
       installed={skill.installed}
       loading={skill.loading}
-      error={skill.error}
+      error={activeSkillRuntime.installDisabledReason ?? skill.error}
+      installDisabled={Boolean(activeSkillRuntime.installDisabledReason)}
       terminalHeightPx={terminalHeightPx}
-      preInstallNotice={AGENT_SKILL_CLI_PREREQUISITE_NOTICE}
       onBeforeOpenTerminal={handleBeforeOpenTerminal}
       showRecheckWhenInstalled={false}
       onRecheck={skill.refresh}
+      freshnessSkillName={
+        activeSkillRuntime.canUseLocalSkillFreshness ? ORCA_CLI_SKILL_NAME : undefined
+      }
     />
   )
 

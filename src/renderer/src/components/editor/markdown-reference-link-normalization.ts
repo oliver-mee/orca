@@ -1,3 +1,9 @@
+import {
+  createMarkdownFenceRangeCursor,
+  createMarkdownFenceTracker,
+  getMarkdownFenceRanges
+} from './markdown-fence-scanner'
+
 type ReferenceLinkDefinition = {
   label: string
   title: string | null
@@ -8,7 +14,39 @@ const REFERENCE_DEFINITION_PATTERN =
   /^ {0,3}\[([^\]]+)\]:[ \t]*(<[^>\n]+>|[^\s]+)(?:[ \t]+(?:"([^"]*)"|'([^']*)'|\(([^)]*)\)))?[ \t]*$/
 
 function normalizeReferenceLabel(label: string): string {
-  return label.trim().replace(/\s+/g, ' ').toLowerCase()
+  let normalized = ''
+  let pendingWhitespace = false
+  for (let index = 0; index < label.length; index += 1) {
+    const code = label.charCodeAt(index)
+    if (isMarkdownReferenceLabelWhitespace(code)) {
+      pendingWhitespace = normalized.length > 0
+      continue
+    }
+    if (pendingWhitespace) {
+      normalized += ' '
+      pendingWhitespace = false
+    }
+    normalized += label.charAt(index)
+  }
+  return normalized.toLowerCase()
+}
+
+// Why: pasted markdown labels can be large; matching only needs collapsed
+// reference-label whitespace, not a full-string whitespace regex pass.
+function isMarkdownReferenceLabelWhitespace(code: number): boolean {
+  return (
+    code === 32 ||
+    (code >= 9 && code <= 13) ||
+    code === 160 ||
+    code === 5760 ||
+    (code >= 8192 && code <= 8202) ||
+    code === 8232 ||
+    code === 8233 ||
+    code === 8239 ||
+    code === 8287 ||
+    code === 12288 ||
+    code === 65279
+  )
 }
 
 function unwrapReferenceUrl(rawUrl: string): string {
@@ -33,37 +71,42 @@ function splitReferenceDefinitions(content: string): {
   markdown: string
 } {
   const definitions = new Map<string, ReferenceLinkDefinition>()
-  const lines = content.split(/(\n)/)
-  let activeFence: '`' | '~' | null = null
-  let activeFenceLength = 0
+  const fence = createMarkdownFenceTracker()
   let markdown = ''
 
-  for (let index = 0; index < lines.length; index += 2) {
-    const line = lines[index] ?? ''
-    const newline = lines[index + 1] ?? ''
-    const fenceMatch = line.match(/^\s*(`{3,}|~{3,})/)
-    if (fenceMatch) {
-      const fenceChar = fenceMatch[1][0] as '`' | '~'
-      const fenceLength = fenceMatch[1].length
-      if (activeFence === null) {
-        activeFence = fenceChar
-        activeFenceLength = fenceLength
-      } else if (activeFence === fenceChar && fenceLength >= activeFenceLength) {
-        activeFence = null
-        activeFenceLength = 0
-      }
-    }
-
-    const definition = activeFence === null ? parseReferenceDefinition(line) : null
+  forEachReferenceDefinitionLine(content, (line, newline) => {
+    const isFenceLine = fence.consume(line)
+    const definition = isFenceLine || fence.insideFence ? null : parseReferenceDefinition(line)
     if (definition) {
       definitions.set(definition.label, definition)
-      continue
+      return
     }
 
     markdown += line + newline
-  }
+  })
 
   return { definitions, markdown }
+}
+
+function forEachReferenceDefinitionLine(
+  content: string,
+  visit: (line: string, newline: string) => void
+): void {
+  let lineStart = 0
+  for (let index = 0; index <= content.length; index += 1) {
+    const codeUnit = index < content.length ? content.charCodeAt(index) : 10
+    if (index < content.length && codeUnit !== 10 && codeUnit !== 13) {
+      continue
+    }
+    const hasLineEnding = index < content.length
+    const hasCrLf = codeUnit === 13 && content.charCodeAt(index + 1) === 10
+    const newline = hasLineEnding ? (hasCrLf ? '\r\n' : content[index]) : ''
+    visit(content.slice(lineStart, index), newline)
+    if (hasCrLf) {
+      index += 1
+    }
+    lineStart = index + 1
+  }
 }
 
 function isEscaped(content: string, index: number): boolean {
@@ -98,31 +141,11 @@ function replaceReferenceLinks(
 ): string {
   let result = ''
   let index = 0
-  let activeFence: '`' | '~' | null = null
-  let activeFenceLength = 0
-  let isLineStart = true
+  const isInsideFence = createMarkdownFenceRangeCursor(getMarkdownFenceRanges(markdown))
 
   while (index < markdown.length) {
-    const lineRest = markdown.slice(index)
-    if (isLineStart) {
-      const fenceMatch = lineRest.match(/^\s*(`{3,}|~{3,})/)
-      if (fenceMatch) {
-        const fenceChar = fenceMatch[1][0] as '`' | '~'
-        const fenceLength = fenceMatch[1].length
-        if (activeFence === null) {
-          activeFence = fenceChar
-          activeFenceLength = fenceLength
-        } else if (activeFence === fenceChar && fenceLength >= activeFenceLength) {
-          activeFence = null
-          activeFenceLength = 0
-        }
-      }
-    }
-
-    if (activeFence || markdown[index] !== '[' || isEscaped(markdown, index)) {
-      const nextChar = markdown[index]
-      result += nextChar
-      isLineStart = nextChar === '\n'
+    if (isInsideFence(index) || markdown[index] !== '[' || isEscaped(markdown, index)) {
+      result += markdown[index]
       index += 1
       continue
     }
@@ -130,7 +153,6 @@ function replaceReferenceLinks(
     const closingTextIndex = findClosingBracket(markdown, index + 1)
     if (closingTextIndex === -1) {
       result += markdown[index]
-      isLineStart = false
       index += 1
       continue
     }
@@ -139,7 +161,6 @@ function replaceReferenceLinks(
     const afterText = markdown[closingTextIndex + 1]
     if (afterText === '(') {
       result += markdown[index]
-      isLineStart = false
       index += 1
       continue
     }
@@ -152,7 +173,6 @@ function replaceReferenceLinks(
         const definition = definitions.get(label)
         if (definition) {
           result += formatInlineReferenceLink(text, definition)
-          isLineStart = false
           index = closingLabelIndex + 1
           continue
         }
@@ -161,14 +181,12 @@ function replaceReferenceLinks(
       const definition = definitions.get(normalizeReferenceLabel(text))
       if (definition) {
         result += formatInlineReferenceLink(text, definition)
-        isLineStart = false
         index = closingTextIndex + 1
         continue
       }
     }
 
     result += markdown[index]
-    isLineStart = false
     index += 1
   }
 

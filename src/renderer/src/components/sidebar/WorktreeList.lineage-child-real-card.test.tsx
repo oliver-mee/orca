@@ -1,20 +1,30 @@
 // @vitest-environment happy-dom
 
+vi.mock('@/components/confirmation-dialog-context', () => ({
+  useConfirmationDialog: () => vi.fn().mockResolvedValue(false)
+}))
+
 import { act, type ReactNode } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { HostedReviewInfo } from '../../../../shared/hosted-review'
-import type {
-  Repo,
-  Worktree,
-  WorktreeCardProperty,
-  WorktreeLineage
-} from '../../../../shared/types'
+import type { Repo } from '../../../../shared/repo-types'
+import type { WorktreeCardProperty } from '../../../../shared/ui-chrome-types'
+import type { WorktreeLineage } from '../../../../shared/worktree/lineage-types'
+import type { Worktree } from '../../../../shared/worktree/types'
+import {
+  FLUSH_CARD_MIN_CONTENT_INSET,
+  LINEAGE_CHILDREN_INLINE_OFFSET,
+  LINEAGE_IMMEDIATE_PARENT_STEP,
+  LINEAGE_NESTED_ROW_SURFACE_INSET,
+  WORKTREE_CARD_SURFACE_MARGIN
+} from './worktree-list/rows/indentation'
 
 globalThis.IS_REACT_ACT_ENVIRONMENT = true
 
 const mockStore = vi.hoisted(() => ({
   state: {} as Record<string, unknown>,
+  setVisibleReviewCardWorktreeIds: vi.fn<(ids: readonly string[]) => void>(),
   activateWorktreeFromSidebar: vi.fn(),
   openModal: vi.fn(),
   updateWorktreeMeta: vi.fn(),
@@ -41,16 +51,15 @@ function makeFolderWorkspacePathStatusMockState(): Record<string, unknown> {
   }
 }
 
-vi.mock('@/store', () => {
-  const useAppStore = ((selector: (state: Record<string, unknown>) => unknown) =>
-    selector(mockStore.state)) as ((
-    selector: (state: Record<string, unknown>) => unknown
-  ) => unknown) & {
-    getState: () => Record<string, unknown>
-  }
-  useAppStore.getState = () => mockStore.state
-  return { useAppStore }
-})
+vi.mock('@/store', () => ({
+  useAppStore: Object.assign(
+    (selector: (state: Record<string, unknown>) => unknown) => selector(mockStore.state),
+    {
+      getState: () => mockStore.state,
+      subscribe: () => () => {}
+    }
+  )
+}))
 
 vi.mock('@tanstack/react-virtual', () => ({
   defaultRangeExtractor: ({ startIndex, endIndex }: { startIndex: number; endIndex: number }) =>
@@ -118,10 +127,7 @@ vi.mock('@/lib/worktree-activation', () => ({
   activateAndRevealWorktree: vi.fn()
 }))
 
-vi.mock('@/runtime/runtime-rpc-client', () => ({
-  getActiveRuntimeTarget: () => ({ kind: 'local' }),
-  callRuntimeRpc: vi.fn()
-}))
+vi.mock('@/runtime/runtime-rpc-client', () => ({ callRuntimeRpc: vi.fn() }))
 
 vi.mock('./CacheTimer', () => ({
   default: () => null,
@@ -135,13 +141,8 @@ vi.mock('./WorktreeCardAgents', () => ({
   SUPPRESS_WORKTREE_LIST_SCROLL_ADJUSTMENT_EVENT: 'orca:test-suppress-scroll-adjustment'
 }))
 
-vi.mock('./SshDisconnectedDialog', () => ({
-  SshDisconnectedDialog: () => null
-}))
-
 vi.mock('./WorktreeContextMenu', () => ({
   default: ({ children }: { children: ReactNode }) => <>{children}</>,
-  CLOSE_ALL_CONTEXT_MENUS_EVENT: 'orca:test-close-context-menus',
   WORKTREE_CONTEXT_MENU_SCOPE_ATTR: 'data-orca-context-menu-scope',
   WORKTREE_NATIVE_CONTEXT_MENU_ATTR: 'data-worktree-native-context-menu'
 }))
@@ -223,7 +224,9 @@ function makeFolderWorkspacePathStatusState(): Record<string, unknown> {
   }
 }
 
-function setLineageState(options: { deletingChild?: boolean } = {}): void {
+function setLineageState(
+  options: { deletingChild?: boolean; includeGrandchild?: boolean } = {}
+): void {
   const repo = makeRepo()
   const parent = makeWorktree({
     id: 'parent',
@@ -243,6 +246,20 @@ function setLineageState(options: { deletingChild?: boolean } = {}): void {
       comment: 'Child handoff note'
     }
   })
+  const grandchild = makeWorktree({
+    id: 'grandchild',
+    instanceId: 'grandchild-instance',
+    displayName: 'lineage grandchild',
+    branch: 'grandchild-branch',
+    sortOrder: 5
+  })
+  const worktrees = options.includeGrandchild ? [parent, child, grandchild] : [parent, child]
+  const worktreeLineageById: Record<string, WorktreeLineage> = {
+    [child.id]: makeLineage(child, parent)
+  }
+  if (options.includeGrandchild) {
+    worktreeLineageById[grandchild.id] = makeLineage(grandchild, child)
+  }
   mockStore.state = {
     ...makeFolderWorkspacePathStatusMockState(),
     activeModal: '',
@@ -288,6 +305,7 @@ function setLineageState(options: { deletingChild?: boolean } = {}): void {
     remoteBranchConflictByWorktreeId: {},
     reorderRepos: vi.fn(),
     reportVisibleGitHubPRRefreshCandidates: vi.fn(),
+    setVisibleReviewCardWorktreeIds: mockStore.setVisibleReviewCardWorktreeIds,
     repos: [repo],
     retainedAgentsByPaneKey: {},
     revealWorktreeInSidebar: vi.fn(),
@@ -320,11 +338,9 @@ function setLineageState(options: { deletingChild?: boolean } = {}): void {
       'comment',
       'inline-agents'
     ] satisfies WorktreeCardProperty[],
-    worktreeLineageById: {
-      [child.id]: makeLineage(child, parent)
-    },
+    worktreeLineageById,
     worktreesByRepo: {
-      [repo.id]: [parent, child]
+      [repo.id]: worktrees
     }
   }
 }
@@ -344,10 +360,28 @@ async function renderWorktreeList(): Promise<HTMLDivElement> {
   return container
 }
 
+function px(value: string): number {
+  return value === '' ? 0 : Number.parseFloat(value)
+}
+
+function expectBoundaryStep(args: {
+  wrapper: HTMLElement
+  row: HTMLElement
+  surface: HTMLElement
+}): void {
+  const effectiveStep =
+    px(args.wrapper.style.marginLeft) +
+    px(args.row.style.paddingLeft) +
+    WORKTREE_CARD_SURFACE_MARGIN +
+    px(args.surface.style.paddingLeft)
+
+  expect(effectiveStep).toBe(LINEAGE_IMMEDIATE_PARENT_STEP)
+}
+
 describe('WorktreeList real child WorktreeCard integration', () => {
   beforeAll(async () => {
     WorktreeList = (await import('./WorktreeList')).default as WorktreeListComponent
-  }, 20_000)
+  }, 60_000)
 
   beforeEach(() => {
     vi.clearAllMocks()
@@ -365,17 +399,77 @@ describe('WorktreeList real child WorktreeCard integration', () => {
 
   it('renders GitLab MR metadata from a child through the real WorktreeCard path', async () => {
     const container = await renderWorktreeList()
-    const childOption = container.querySelector('[id="worktree-list-option-all%3Achild"]')
+    const childOption = container.querySelector('[id="worktree-list-option-all%3A%7Cchild"]')
 
     expect(childOption?.textContent).toContain('MR #42')
     expect(childOption?.textContent).toContain('Child GitLab MR')
     expect(childOption?.textContent).toContain('Child handoff note')
   })
 
+  it('keeps expanded child cards in the parent title column', async () => {
+    mockStore.state.settings = { experimentalNewWorktreeCardStyle: true }
+    const container = await renderWorktreeList()
+    const childList = container.querySelector<HTMLElement>('[data-worktree-lineage-children]')
+
+    expect(childList).not.toBeNull()
+    expect(childList!.style.marginLeft).toBe(`${LINEAGE_CHILDREN_INLINE_OFFSET}px`)
+    expect(childList!.style.width).toBe(`calc(100% - ${LINEAGE_CHILDREN_INLINE_OFFSET}px)`)
+  })
+
+  it.each([
+    { newCardStyle: false, showStatus: false },
+    { newCardStyle: false, showStatus: true },
+    { newCardStyle: true, showStatus: false },
+    { newCardStyle: true, showStatus: true }
+  ])('keeps lineage outside the status lane (%j)', async ({ newCardStyle, showStatus }) => {
+    setLineageState({ includeGrandchild: true })
+    mockStore.state.settings = { experimentalNewWorktreeCardStyle: newCardStyle }
+    mockStore.state.worktreeCardProperties = showStatus ? ['status'] : []
+    const container = await renderWorktreeList()
+    const wrappers = [
+      ...container.querySelectorAll<HTMLElement>('[data-worktree-lineage-children]')
+    ]
+    const childRow = container.querySelector<HTMLElement>(
+      '[id="worktree-list-option-all%3A%7Cchild"]'
+    )
+    const grandchildRow = container.querySelector<HTMLElement>(
+      '[id="worktree-list-option-all%3A%7Cgrandchild"]'
+    )
+    const childSurface = childRow?.querySelector<HTMLElement>('[data-worktree-card-surface="true"]')
+    const grandchildSurface = grandchildRow?.querySelector<HTMLElement>(
+      '[data-worktree-card-surface="true"]'
+    )
+
+    expect(wrappers).toHaveLength(2)
+    expect(childRow).not.toBeNull()
+    expect(grandchildRow).not.toBeNull()
+    expect(childSurface).not.toBeNull()
+    expect(grandchildSurface).not.toBeNull()
+    expect(px(childRow!.style.paddingLeft)).toBe(LINEAGE_NESTED_ROW_SURFACE_INSET)
+    expect(px(grandchildRow!.style.paddingLeft)).toBe(LINEAGE_NESTED_ROW_SURFACE_INSET)
+    expect(px(childSurface!.style.paddingLeft)).toBe(FLUSH_CARD_MIN_CONTENT_INSET)
+    expect(px(grandchildSurface!.style.paddingLeft)).toBe(FLUSH_CARD_MIN_CONTENT_INSET)
+    for (const wrapper of wrappers) {
+      expect(wrapper.parentElement?.dataset.worktreeCardSurface).toBe('true')
+      expect(wrapper.closest('[data-worktree-card-parent-content]')).toBeNull()
+    }
+
+    expectBoundaryStep({
+      wrapper: wrappers[0]!,
+      row: childRow!,
+      surface: childSurface!
+    })
+    expectBoundaryStep({
+      wrapper: wrappers[1]!,
+      row: grandchildRow!,
+      surface: grandchildSurface!
+    })
+  })
+
   it('double-clicking a nested child opens edit metadata for the child only', async () => {
     const container = await renderWorktreeList()
     const childCard = container.querySelector<HTMLElement>(
-      '[id="worktree-list-option-all%3Achild"] [data-worktree-card-surface="true"]'
+      '[id="worktree-list-option-all%3A%7Cchild"] [data-worktree-card-surface="true"]'
     )
 
     expect(childCard).not.toBeNull()
@@ -402,7 +496,7 @@ describe('WorktreeList real child WorktreeCard integration', () => {
     setLineageState({ deletingChild: true })
     const container = await renderWorktreeList()
     const childCard = container.querySelector<HTMLElement>(
-      '[id="worktree-list-option-all%3Achild"] [data-worktree-card-surface="true"]'
+      '[id="worktree-list-option-all%3A%7Cchild"] [data-worktree-card-surface="true"]'
     )
 
     expect(childCard?.textContent).toContain('Deleting')

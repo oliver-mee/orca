@@ -16,8 +16,11 @@ async function openSourceControl(page: Page): Promise<void> {
   await expect(page.getByPlaceholder(/Filter files/)).toBeVisible()
 }
 
-async function seedUntrackedFile(page: Page): Promise<SeededUntrackedFile> {
-  return page.evaluate(async () => {
+async function seedUntrackedFile(
+  page: Page,
+  requestedFileName?: string
+): Promise<SeededUntrackedFile> {
+  const seeded = await page.evaluate(async (requestedFileName) => {
     const store = window.__store
     if (!store) {
       throw new Error('window.__store is not available')
@@ -33,31 +36,33 @@ async function seedUntrackedFile(page: Page): Promise<SeededUntrackedFile> {
     }
 
     const separator = worktree.path.includes('\\') ? '\\' : '/'
-    const fileName = `orca-discard-confirm-${Date.now()}.txt`
+    const fileName = requestedFileName ?? `orca-discard-confirm-${Date.now()}.txt`
     const relativePath = fileName
     await window.api.fs.writeFile({
       filePath: `${worktree.path}${separator}${relativePath}`,
       content: 'delete me\n'
     })
 
-    const status = await window.api.git.status({ worktreePath: worktree.path })
-    state.setGitStatus(worktree.id, status)
-    const statusEntry = status.entries.find((entry) => entry.path.endsWith(fileName))
-    if (!statusEntry) {
-      throw new Error(`git status did not include ${fileName}`)
-    }
-
     return {
       fileName
     }
-  })
+  }, requestedFileName)
+
+  // Why: a status read already in flight when the file was written can be joined and miss it.
+  await expect
+    .poll(
+      async () => (await refreshGitStatus(page)).some((path) => path.endsWith(seeded.fileName)),
+      { timeout: 10_000, message: `git status did not include ${seeded.fileName}` }
+    )
+    .toBe(true)
+  return seeded
 }
 
-async function refreshGitStatus(page: Page): Promise<void> {
-  await page.evaluate(async () => {
+async function refreshGitStatus(page: Page): Promise<string[]> {
+  return page.evaluate(async () => {
     const store = window.__store
     if (!store) {
-      return
+      throw new Error('window.__store is not available')
     }
     const state = store.getState()
     const worktreeId = state.activeWorktreeId
@@ -65,9 +70,11 @@ async function refreshGitStatus(page: Page): Promise<void> {
       .flat()
       .find((entry) => entry.id === worktreeId)
     if (!worktree) {
-      return
+      throw new Error('active worktree not found')
     }
-    state.setGitStatus(worktree.id, await window.api.git.status({ worktreePath: worktree.path }))
+    const status = await window.api.git.status({ worktreePath: worktree.path })
+    state.setGitStatus(worktree.id, status)
+    return status.entries.map((entry) => entry.path)
   })
 }
 
@@ -90,19 +97,65 @@ async function confirmPendingDelete(page: Page): Promise<void> {
   await confirmButton.click()
 }
 
+async function expectDeleteDialogLayout(page: Page, fileName: string): Promise<void> {
+  const dialog = page.getByRole('dialog', { name: `Delete "${fileName}"?` })
+  await expect(dialog).toBeVisible()
+  await expect
+    .poll(
+      async () =>
+        dialog.evaluate((element) => {
+          const panel = element.getBoundingClientRect()
+          const title = element.querySelector<HTMLElement>('[data-slot="dialog-title"]')
+          const footer = element.querySelector<HTMLElement>('[data-slot="dialog-footer"]')
+          if (!title || !footer) {
+            return false
+          }
+          const titleRect = title.getBoundingClientRect()
+          const footerRect = footer.getBoundingClientRect()
+          const lineHeight = Number.parseFloat(getComputedStyle(title).lineHeight) || 16
+          const buttonsFit = [...footer.querySelectorAll<HTMLElement>('button')].every((button) => {
+            const rect = button.getBoundingClientRect()
+            return rect.left >= panel.left && rect.right <= panel.right
+          })
+          return (
+            titleRect.height > lineHeight * 1.5 &&
+            titleRect.left >= panel.left &&
+            titleRect.right <= panel.right &&
+            footerRect.left >= panel.left &&
+            footerRect.right <= panel.right &&
+            buttonsFit &&
+            element.scrollWidth <= element.clientWidth
+          )
+        }),
+      { timeout: 5_000, message: 'long delete-dialog title or footer escaped the panel' }
+    )
+    .toBe(true)
+}
+
 test.describe('Source Control discard confirmation', () => {
   test.beforeEach(async ({ orcaPage }) => {
     await waitForSessionReady(orcaPage)
     await waitForActiveWorktree(orcaPage)
   })
 
-  test('deletes an untracked file without confirmation', async ({ orcaPage }) => {
-    const seededFile = await seedUntrackedFile(orcaPage)
+  test('keeps long untracked-file confirmation usable and deletes on confirm', async ({
+    orcaPage
+  }) => {
+    const seededFile = await seedUntrackedFile(
+      orcaPage,
+      `orca-discard-confirm-${'x'.repeat(96)}.txt`
+    )
     await openSourceControl(orcaPage)
 
     const row = orcaPage
       .locator('[data-testid="source-control-entry"]')
       .filter({ hasText: seededFile.fileName })
+    await expect(row).toBeVisible()
+
+    await deleteUntrackedFileFromRow(row)
+    await expectDeleteDialogLayout(orcaPage, seededFile.fileName)
+
+    await orcaPage.getByRole('button', { name: 'Cancel' }).click()
     await expect(row).toBeVisible()
 
     await deleteUntrackedFileFromRow(row)

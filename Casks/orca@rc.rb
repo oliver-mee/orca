@@ -5,8 +5,7 @@ cask "orca@rc" do
   sha256 arm:   "563b6b14323fc9d5489299c82442d514bc12cabffc9d06d3964ed572af4b3955",
          intel: "457088c7021f07de1a419197f7b2bd00092741ad4727d4fef3d86af38a6831e7"
 
-  url "https://github.com/stablyai/orca/releases/download/v#{version}/orca-macos-#{arch}.dmg",
-      verified: "github.com/stablyai/orca/"
+  url "https://github.com/stablyai/orca/releases/download/v#{version}/orca-macos-#{arch}.dmg"
   name "Orca RC"
   desc "IDE for orchestrating AI coding agents across terminals and worktrees"
   homepage "https://onorca.dev/"
@@ -34,6 +33,13 @@ cask "orca@rc" do
   depends_on macos: :big_sur
 
   app "Orca.app"
+
+  # Why: expose the bundled `orca` CLI on PATH at install time (Homebrew symlinks
+  # this into its already-on-PATH bin dir). Without it, the CLI is only registered
+  # by the in-app "Install CLI" action, which a headless host can never trigger —
+  # so `orca serve` on a server would be unreachable from the shell. The shim
+  # resolves the real app by walking symlinks, so the Homebrew symlink works.
+  binary "#{appdir}/Orca.app/Contents/Resources/bin/orca"
 
   # Why: Orca writes user data under ~/.orca (worktrees, agent state) and
   # Electron's standard userData directories. Zap removes everything the app

@@ -4,7 +4,7 @@ vi.mock('sonner', () => ({ toast: { info: vi.fn(), success: vi.fn(), error: vi.f
 vi.mock('@/runtime/sync-runtime-graph', () => ({
   scheduleRuntimeGraphSync: vi.fn()
 }))
-vi.mock('@/components/terminal-pane/pty-transport', () => ({
+vi.mock('@/components/terminal-pane/pty-dispatcher', () => ({
   registerEagerPtyBuffer: vi.fn(),
   ensurePtyDispatcher: vi.fn(),
   unregisterPtyDataHandlers: vi.fn()
@@ -224,6 +224,42 @@ describe('runtimePaneTitle → sortEpoch', () => {
 
     unsubscribe()
     expect(publications).toBe(tabCount * 2)
+  })
+
+  it('publishes a bulk tab-title update once across worktrees', () => {
+    const store = createTestStore()
+    const tabCount = 20
+    const worktrees = Array.from({ length: tabCount }, (_, index) =>
+      makeWorktree({ id: `wt-${index}`, repoId: 'repo1', path: `/path/wt-${index}` })
+    )
+    seedStore(store, {
+      worktreesByRepo: { repo1: worktrees },
+      tabsByWorktree: Object.fromEntries(
+        worktrees.map((worktree, index) => [
+          worktree.id,
+          [makeTab({ id: `tab-${index}`, worktreeId: worktree.id })]
+        ])
+      )
+    })
+    let publications = 0
+    const unsubscribe = store.subscribe(() => {
+      publications += 1
+    })
+
+    store.getState().updateTabTitles(
+      worktrees.map((_, index) => ({
+        tabId: `tab-${index}`,
+        title: `Codex ready ${index}`
+      }))
+    )
+
+    unsubscribe()
+    expect(publications).toBe(1)
+    for (let index = 0; index < tabCount; index += 1) {
+      expect(store.getState().tabsByWorktree[`wt-${index}`]?.[0]?.title).toBe(
+        `Codex ready ${index}`
+      )
+    }
   })
 
   it('does not enumerate terminal tabs when only the spinner frame changes', () => {

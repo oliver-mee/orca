@@ -2,9 +2,11 @@
 
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { getExecutionHostLabel } from '../../../../shared/execution-host'
+import { setRendererUiLanguage } from '@/i18n/i18n'
 import { getProviderRuntimeContextKey } from '@/lib/provider-runtime-context'
+import { TooltipProvider } from '../ui/tooltip'
 import { LinearIntegrationCard } from './task-tracker-integration-cards'
 
 const LOCAL_HOST_LABEL = getExecutionHostLabel('local')
@@ -86,12 +88,27 @@ async function renderCard(): Promise<HTMLDivElement> {
   document.body.appendChild(container)
   root = createRoot(container)
   await act(async () => {
-    root?.render(<LinearIntegrationCard />)
+    root?.render(
+      <TooltipProvider>
+        <LinearIntegrationCard />
+      </TooltipProvider>
+    )
   })
   return container
 }
 
 describe('LinearIntegrationCard account scope', () => {
+  beforeEach(() => {
+    // Why: the embedded agent-skill CTA scans installed skills through
+    // window.api; without a stub it renders a scan error instead of a state.
+    Object.defineProperty(window, 'api', {
+      configurable: true,
+      value: {
+        skills: { discover: async () => ({ skills: [], sources: [], scannedAt: 0 }) }
+      }
+    })
+  })
+
   afterEach(async () => {
     if (root) {
       await act(async () => {
@@ -102,16 +119,49 @@ describe('LinearIntegrationCard account scope', () => {
     container?.remove()
     container = null
     mocks.store.current = null
+    await setRendererUiLanguage('en')
+    Reflect.deleteProperty(window, 'api')
   })
+
+  it.each(['en', 'ko'] as const)(
+    'renders complete %s connection counts without an English suffix',
+    async (language) => {
+      await setRendererUiLanguage(language)
+      for (const count of [0, 1, 2]) {
+        const state = installStore(true)
+        state.linearStatus.workspaces = Array.from({ length: count }, (_, index) => ({
+          id: `workspace-${index}`,
+          organizationName: 'Fixture',
+          displayName: 'Fixture workspace'
+        }))
+        const rendered = await renderCard()
+        const description =
+          rendered.querySelector('[data-settings-section="integrations-linear"]')?.textContent ?? ''
+        const expected =
+          language === 'ko'
+            ? `워크스페이스 ${count}개 연결됨`
+            : `${count} workspace${count === 1 ? '' : 's'} connected`
+        expect(description).toContain(expected)
+        expect(description).not.toMatch(/개(?: 사이트| 워크스페이스)?s/)
+        await act(async () => {
+          root?.unmount()
+        })
+        root = null
+        container?.remove()
+        container = null
+      }
+    }
+  )
 
   it('shows local-client account ownership when Linear is disconnected', async () => {
     const state = installStore(false)
 
     const rendered = await renderCard()
 
+    expect(rendered.querySelector('[data-settings-section="integrations-linear"]')).not.toBeNull()
     expect(rendered.textContent).toContain(`Account scope: ${LOCAL_HOST_LABEL}`)
     expect(rendered.textContent).toContain(
-      'Credentials and account checks for this provider are owned by this desktop client. Use Settings > Remote Orca Servers > Advanced to edit server-owned credentials.'
+      'Credentials and account checks for this provider are owned by this desktop client. To use a server, change Settings > Remote Orca Servers > Advanced > Default host for new projects.'
     )
     expect(rendered.textContent).toContain('Open Remote Servers')
     expect(rendered.textContent).toContain('Add access with a Personal API key')
@@ -132,7 +182,7 @@ describe('LinearIntegrationCard account scope', () => {
 
     expect(rendered.textContent).toContain('Account scope: Remote server: runtime-1')
     expect(rendered.textContent).toContain(
-      'Credentials and account checks for this provider are owned by this remote server. Use Settings > Remote Orca Servers > Advanced to edit another default runtime scope.'
+      'Credentials and account checks for this provider are owned by this remote server. To use another host, change Settings > Remote Orca Servers > Advanced > Default host for new projects.'
     )
     await act(async () => {
       Array.from(rendered.querySelectorAll('button'))

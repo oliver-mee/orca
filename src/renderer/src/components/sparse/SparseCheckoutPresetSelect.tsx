@@ -1,13 +1,15 @@
-import React, { useCallback, useMemo, useRef, useState } from 'react'
-import { Check, ChevronsUpDown, LoaderCircle, Pencil, Plus, RefreshCcw } from 'lucide-react'
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { ChevronsUpDown, LoaderCircle, RefreshCcw } from 'lucide-react'
 import { Button } from '@/components/ui/button'
+import { SparsePresetChooser } from './SparsePresetChooser'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { useAppStore } from '@/store'
-import { cn } from '@/lib/utils'
-import { parseSparsePresetDirectories } from '@/lib/sparse-preset-draft'
+import { parseSparsePresetDirectories, validateSparsePresetName } from '@/lib/sparse-preset-draft'
 import { useMountedRef } from '@/hooks/useMountedRef'
-import type { SparsePreset } from '../../../../shared/types'
+import type { SparsePreset } from '../../../../shared/worktree/create-types'
 import { translate } from '@/i18n/i18n'
+import type { SparsePresetDraft } from './SparseCheckoutPresetDraftForm'
+import { SparsePresetInlineEditor } from './SparsePresetInlineEditor'
 
 type SparseCheckoutPresetSelectProps = {
   repoId: string
@@ -15,13 +17,7 @@ type SparseCheckoutPresetSelectProps = {
   selectedPresetId: string | null
   onSelectPreset: (preset: SparsePreset | null) => void
   disabled?: boolean
-}
-
-type PresetDraft = {
-  mode: 'new' | 'edit'
-  presetId?: string
-  name: string
-  directoriesText: string
+  onEditingChange?: (editing: boolean) => void
 }
 
 export default function SparseCheckoutPresetSelect({
@@ -29,8 +25,10 @@ export default function SparseCheckoutPresetSelect({
   presets,
   selectedPresetId,
   onSelectPreset,
-  disabled = false
+  disabled = false,
+  onEditingChange
 }: SparseCheckoutPresetSelectProps): React.JSX.Element {
+  const repo = useAppStore((s) => s.repos.find((entry) => entry.id === repoId))
   const fetchSparsePresets = useAppStore((s) => s.fetchSparsePresets)
   const saveSparsePreset = useAppStore((s) => s.saveSparsePreset)
   const presetsForRepo = useAppStore((s) => s.sparsePresetsByRepo[repoId])
@@ -39,11 +37,21 @@ export default function SparseCheckoutPresetSelect({
   const presetsLoadError = useAppStore((s) => s.sparsePresetsErrorByRepo[repoId] ?? null)
 
   const [open, setOpen] = useState(false)
-  const [draft, setDraft] = useState<PresetDraft | null>(null)
+  const [draft, setDraft] = useState<SparsePresetDraft | null>(null)
   const [submitting, setSubmitting] = useState(false)
+  const [operationError, setOperationError] = useState<string | null>(null)
+  const triggerRef = useRef<HTMLButtonElement>(null)
   const nameInputRef = useRef<HTMLInputElement>(null)
   const nameInputFocusFrameRef = useRef<number | null>(null)
   const mountedRef = useMountedRef()
+
+  useEffect(() => () => onEditingChange?.(false), [onEditingChange])
+
+  const finishDraft = useCallback(() => {
+    setDraft(null)
+    onEditingChange?.(false)
+    triggerRef.current?.focus()
+  }, [onEditingChange])
 
   const visiblePresets = presetsForRepo ?? presets
   const presetsLoaded = presetsForRepo !== undefined
@@ -55,21 +63,9 @@ export default function SparseCheckoutPresetSelect({
   )
   const parsedDirectories = draft ? parseSparsePresetDirectories(draft.directoriesText) : null
   const trimmedName = draft?.name.trim() ?? ''
-  const nameCollision =
-    draft && trimmedName
-      ? (visiblePresets.find(
-          (preset) =>
-            preset.id !== draft.presetId && preset.name.toLowerCase() === trimmedName.toLowerCase()
-        ) ?? null)
-      : null
-  const nameError =
-    draft && trimmedName.length === 0
-      ? 'Name is required.'
-      : trimmedName.length > 80
-        ? 'Name must be 80 characters or fewer.'
-        : nameCollision
-          ? `"${nameCollision.name}" already exists.`
-          : null
+  const nameError = draft
+    ? validateSparsePresetName(draft.name, visiblePresets, draft.presetId)
+    : null
   const canSave =
     draft !== null &&
     !submitting &&
@@ -99,19 +95,25 @@ export default function SparseCheckoutPresetSelect({
   )
 
   const startDraft = useCallback(
-    (nextDraft: PresetDraft): void => {
+    (nextDraft: SparsePresetDraft): void => {
       if (disabled || !presetsLoaded) {
         return
       }
+      setOpen(false)
+      setOperationError(null)
       setDraft(nextDraft)
+      onEditingChange?.(true)
       cancelNameInputFocusFrame()
       nameInputFocusFrameRef.current = requestAnimationFrame(() => {
         nameInputFocusFrameRef.current = null
         nameInputRef.current?.focus()
         nameInputRef.current?.select()
+        nameInputRef.current
+          ?.closest('[data-sparse-preset-editor]')
+          ?.scrollIntoView({ block: 'start' })
       })
     },
-    [cancelNameInputFocusFrame, disabled, presetsLoaded]
+    [cancelNameInputFocusFrame, disabled, onEditingChange, presetsLoaded]
   )
 
   const startNewPreset = useCallback((): void => {
@@ -143,6 +145,7 @@ export default function SparseCheckoutPresetSelect({
       return
     }
     setSubmitting(true)
+    setOperationError(null)
     try {
       const saved = await saveSparsePreset({
         repoId,
@@ -154,8 +157,18 @@ export default function SparseCheckoutPresetSelect({
         if (draft.mode === 'new' || selectedPresetId === saved.id) {
           onSelectPreset(saved)
         }
-        setDraft(null)
+        finishDraft()
         setOpen(false)
+      } else if (mountedRef.current) {
+        setOperationError(
+          translate('sparsePreset.saveFailed', 'Could not save the preset. Try again.')
+        )
+      }
+    } catch {
+      if (mountedRef.current) {
+        setOperationError(
+          translate('sparsePreset.saveFailed', 'Could not save the preset. Try again.')
+        )
       }
     } finally {
       if (mountedRef.current) {
@@ -165,6 +178,7 @@ export default function SparseCheckoutPresetSelect({
   }, [
     canSave,
     draft,
+    finishDraft,
     mountedRef,
     onSelectPreset,
     parsedDirectories,
@@ -196,214 +210,122 @@ export default function SparseCheckoutPresetSelect({
   )
 
   const triggerLabel = isLoadingPresets
-    ? 'Loading presets...'
+    ? translate('sparsePreset.loading', 'Loading presets...')
     : hasPresetLoadError
-      ? 'Retry loading presets'
+      ? translate(
+          'auto.components.sparse.SparseCheckoutPresetSelect.a683a4bc8e',
+          'Retry loading presets'
+        )
       : !presetsLoaded
-        ? 'Load presets'
+        ? translate('auto.components.sparse.SparseCheckoutPresetSelect.16223dde6a', 'Load presets')
         : selectedPreset
           ? selectedPreset.name
-          : 'Off'
+          : translate('sparsePreset.fullCheckout', 'Full checkout')
 
   return (
-    <Popover
-      open={open}
-      onOpenChange={(nextOpen) => {
-        if (nextOpen && presetsLoading) {
-          setOpen(false)
-          setDraft(null)
-          return
-        }
-        setOpen(nextOpen)
-        if (!nextOpen) {
-          setDraft(null)
-        }
-      }}
-    >
-      <PopoverTrigger asChild>
-        <Button
-          type="button"
-          variant="outline"
-          role="combobox"
-          aria-expanded={open}
-          aria-busy={isLoadingPresets}
-          disabled={disabled || isLoadingPresets}
-          className="h-9 w-full justify-between px-3 text-sm font-normal text-foreground"
-        >
-          <span className="truncate">{triggerLabel}</span>
-          {isLoadingPresets ? (
-            <LoaderCircle className="size-3.5 animate-spin opacity-60" />
-          ) : hasPresetLoadError || !presetsLoaded ? (
-            <RefreshCcw className="size-3.5 opacity-60" />
-          ) : (
-            <ChevronsUpDown className="size-3.5 opacity-50" />
-          )}
-        </Button>
-      </PopoverTrigger>
-      <PopoverContent
-        align="start"
-        className="popover-scroll-content max-h-[min(var(--radix-popover-content-available-height),24rem)] w-[var(--radix-popover-trigger-width)] max-w-[calc(100vw-2rem)] overflow-y-auto p-0 scrollbar-sleek"
-        onOpenAutoFocus={(event) => event.preventDefault()}
+    <>
+      <Popover
+        open={open}
+        onOpenChange={(nextOpen) => {
+          if (nextOpen && draft) {
+            return
+          }
+          if (nextOpen && presetsLoading) {
+            setOpen(false)
+            setDraft(null)
+            return
+          }
+          setOpen(nextOpen)
+        }}
       >
-        {draft ? (
-          <form
-            onSubmit={(event) => {
-              event.preventDefault()
-              void handleSaveDraft()
-            }}
+        <PopoverTrigger asChild>
+          <Button
+            ref={triggerRef}
+            type="button"
+            variant="outline"
+            role="combobox"
+            aria-label={translate('sparsePreset.checkoutPreset', 'Checkout preset')}
+            aria-expanded={open}
+            aria-busy={isLoadingPresets}
+            aria-disabled={Boolean(draft) || undefined}
+            disabled={disabled || isLoadingPresets}
+            className="w-full justify-between"
           >
-            <div className="border-b border-border px-3 py-2 text-xs font-medium text-foreground">
-              {draft.mode === "new" ? translate("auto.components.sparse.SparseCheckoutPresetSelect.c4ac80151d", "New preset") : translate("auto.components.sparse.SparseCheckoutPresetSelect.69c020eddc", "Edit preset")}
-            </div>
-            <div className="space-y-3 px-3 py-3">
-              <div className="space-y-1">
-                <label
-                  htmlFor="sparse-preset-name"
-                  className="block text-[11px] font-medium text-muted-foreground"
-                >
-                  {translate("auto.components.sparse.SparseCheckoutPresetSelect.b3a500c623", "Name")}</label>
-                <div className="rounded-md border border-border/70 bg-muted/20 px-2.5 shadow-xs transition focus-within:border-ring/70 focus-within:ring-1 focus-within:ring-ring/30">
-                  <input
-                    id="sparse-preset-name"
-                    ref={setNameInputNode}
-                    value={draft.name}
-                    onChange={(event) => setDraft({ ...draft, name: event.target.value })}
-                    placeholder={translate("auto.components.sparse.SparseCheckoutPresetSelect.064c1e2d12", "Renderer UI")}
-                    maxLength={80}
-                    autoComplete="off"
-                    spellCheck={false}
-                    className="h-8 w-full bg-transparent text-xs text-foreground outline-none selection:bg-primary selection:text-primary-foreground placeholder:text-muted-foreground"
-                  />
+            <span className="truncate">{triggerLabel}</span>
+            {isLoadingPresets ? (
+              <LoaderCircle className="size-3.5 animate-spin opacity-60" />
+            ) : hasPresetLoadError || !presetsLoaded ? (
+              <RefreshCcw className="size-3.5 opacity-60" />
+            ) : (
+              <ChevronsUpDown className="size-3.5 opacity-50" />
+            )}
+          </Button>
+        </PopoverTrigger>
+        <PopoverContent
+          align="start"
+          sideOffset={0}
+          wheelScroll
+          className="w-[var(--radix-popover-trigger-width)] max-w-[calc(100vw-2rem)]"
+          onCloseAutoFocus={(event) => {
+            if (draft) {
+              event.preventDefault()
+            }
+          }}
+        >
+          {!presetsLoaded ? (
+            <div className="p-1">
+              {hasPresetLoadError ? (
+                <div className="px-2 py-1.5 text-[11px] text-destructive">
+                  <span className="break-words">{presetsLoadError}</span>
                 </div>
-              </div>
-              <div className="space-y-1">
-                <label
-                  htmlFor="sparse-preset-directories"
-                  className="block text-[11px] font-medium text-muted-foreground"
-                >
-                  {translate("auto.components.sparse.SparseCheckoutPresetSelect.0e9ad9c798", "Directories")}</label>
-                <div className="rounded-md border border-border/70 bg-muted/20 px-2.5 py-1.5 shadow-xs transition focus-within:border-ring/70 focus-within:ring-1 focus-within:ring-ring/30">
-                  <textarea
-                    id="sparse-preset-directories"
-                    value={draft.directoriesText}
-                    onChange={(event) =>
-                      setDraft({ ...draft, directoriesText: event.target.value })
-                    }
-                    placeholder={translate("auto.components.sparse.SparseCheckoutPresetSelect.ddbcaef7be", "src/renderer packages/ui")}
-                    rows={3}
-                    spellCheck={false}
-                    className="max-h-28 w-full min-w-0 resize-none bg-transparent font-mono text-xs leading-5 text-foreground outline-none selection:bg-primary selection:text-primary-foreground placeholder:text-muted-foreground"
-                  />
-                </div>
-              </div>
-            </div>
-            <div className="flex min-h-11 items-center justify-between gap-3 border-t border-border px-3 py-2">
-              <div className="min-w-0 text-[10px] text-muted-foreground">
-                {nameError ? (
-                  <span className="text-destructive">{nameError}</span>
-                ) : parsedDirectories?.error ? (
-                  <span className="text-destructive">{parsedDirectories.error}</span>
-                ) : parsedDirectories?.directories.length === 1 ? (
-                  translate("auto.components.sparse.SparseCheckoutPresetSelect.e9283eb171", "1 directory")
-                ) : (
-                  translate("auto.components.sparse.SparseCheckoutPresetSelect.14952d451e", "{{value0}} directories", { value0: parsedDirectories?.directories.length ?? 0 })
-                )}
-              </div>
-              <div className="flex shrink-0 justify-end gap-1">
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="sm"
-                  className="h-7 px-2 text-xs text-muted-foreground"
-                  onClick={() => setDraft(null)}
-                  disabled={submitting}
-                >
-                  {translate("auto.components.sparse.SparseCheckoutPresetSelect.de8fce5854", "Cancel")}</Button>
-                <Button type="submit" size="sm" className="h-7 px-2 text-xs" disabled={!canSave}>
-                  {submitting ? <LoaderCircle className="size-3 animate-spin" /> : null}
-                  {translate("auto.components.sparse.SparseCheckoutPresetSelect.8b12c0850a", "Save")}</Button>
-              </div>
-            </div>
-          </form>
-        ) : !presetsLoaded ? (
-          <div className="p-1">
-            {hasPresetLoadError ? (
-              <div className="px-2 py-1.5 text-[11px] text-destructive">
-                <span className="break-words">{presetsLoadError}</span>
-              </div>
-            ) : null}
-            <button
-              type="button"
-              className="flex h-9 w-full items-center gap-2 rounded-md px-2 text-left text-xs hover:bg-accent hover:text-accent-foreground"
-              onClick={handleRetryLoadPresets}
-            >
-              <RefreshCcw className="size-3.5 text-muted-foreground" />
-              <span className="truncate">
-                {hasPresetLoadError ? translate("auto.components.sparse.SparseCheckoutPresetSelect.a683a4bc8e", "Retry loading presets") : translate("auto.components.sparse.SparseCheckoutPresetSelect.16223dde6a", "Load presets")}
-              </span>
-            </button>
-          </div>
-        ) : (
-          <div>
-            <div className="py-1">
+              ) : null}
               <button
                 type="button"
-                className="mx-1 flex h-9 w-[calc(100%-0.5rem)] items-center gap-2 rounded-md px-2 text-left text-xs hover:bg-accent hover:text-accent-foreground"
-                onClick={handleSelectOff}
+                className="flex h-9 w-full items-center gap-2 rounded-md px-2 text-left text-xs hover:bg-accent hover:text-accent-foreground"
+                onClick={handleRetryLoadPresets}
               >
-                <Check className={cn('size-4', selectedPreset ? 'opacity-0' : 'opacity-100')} />
-                {translate("auto.components.sparse.SparseCheckoutPresetSelect.c7f9b3f0c1", "Off")}</button>
+                <RefreshCcw className="size-3.5 text-muted-foreground" />
+                <span className="truncate">
+                  {hasPresetLoadError
+                    ? translate(
+                        'auto.components.sparse.SparseCheckoutPresetSelect.a683a4bc8e',
+                        'Retry loading presets'
+                      )
+                    : translate(
+                        'auto.components.sparse.SparseCheckoutPresetSelect.16223dde6a',
+                        'Load presets'
+                      )}
+                </span>
+              </button>
             </div>
-            {visiblePresets.length > 0 ? (
-              <>
-                <div className="h-px bg-border" />
-                <div className="space-y-0.5 py-1">
-                  {visiblePresets.map((preset) => (
-                    <div
-                      key={preset.id}
-                      className="mx-1 flex items-center rounded-md hover:bg-accent hover:text-accent-foreground"
-                    >
-                      <button
-                        type="button"
-                        className="flex h-9 min-w-0 flex-1 items-center gap-2 rounded-l-md px-2 text-left text-xs"
-                        onClick={() => handleSelectPreset(preset)}
-                      >
-                        <Check
-                          className={cn(
-                            'size-4 shrink-0',
-                            selectedPreset?.id === preset.id ? 'opacity-100' : 'opacity-0'
-                          )}
-                        />
-                        <span className="truncate">{preset.name}</span>
-                      </button>
-                      <Button
-                        type="button"
-                        variant="ghost"
-                        size="icon-xs"
-                        aria-label={translate("auto.components.sparse.SparseCheckoutPresetSelect.7c3275d307", "Edit {{value0}}", { value0: preset.name })}
-                        className="mr-1 size-7 shrink-0 rounded-md text-muted-foreground hover:bg-background/35 hover:text-foreground"
-                        onClick={() => startEditPreset(preset)}
-                      >
-                        <Pencil className="size-3.5" />
-                      </Button>
-                    </div>
-                  ))}
-                </div>
-              </>
-            ) : null}
-            <div className="border-t border-border">
-              <Button
-                type="button"
-                variant="ghost"
-                onClick={startNewPreset}
-                className="mx-1 my-1 h-8 w-[calc(100%-0.5rem)] justify-start rounded-md px-2 text-xs font-normal"
-              >
-                <Plus className="size-3.5 text-muted-foreground" />
-                {translate("auto.components.sparse.SparseCheckoutPresetSelect.c4ac80151d", "New preset")}</Button>
-            </div>
-          </div>
-        )}
-      </PopoverContent>
-    </Popover>
+          ) : (
+            <SparsePresetChooser
+              presets={visiblePresets}
+              selectedPresetId={selectedPresetId}
+              onSelect={handleSelectPreset}
+              onSelectFull={handleSelectOff}
+              onEdit={startEditPreset}
+              onNew={startNewPreset}
+            />
+          )}
+        </PopoverContent>
+      </Popover>
+      {draft ? (
+        <SparsePresetInlineEditor
+          draft={draft}
+          parsedDirectories={parsedDirectories}
+          nameError={nameError}
+          submitting={submitting}
+          canSave={canSave}
+          setNameInputNode={setNameInputNode}
+          onDraftChange={setDraft}
+          onCancel={finishDraft}
+          onSave={() => void handleSaveDraft()}
+          operationError={operationError}
+          repoRootPath={repo?.path}
+          repoConnectionId={repo?.connectionId ?? undefined}
+        />
+      ) : null}
+    </>
   )
 }

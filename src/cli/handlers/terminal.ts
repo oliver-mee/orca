@@ -1,11 +1,10 @@
 import type {
-  RuntimeTerminalClose,
   RuntimeTerminalCreate,
   RuntimeTerminalFocus,
   RuntimeTerminalListResult,
   RuntimeTerminalRead,
   RuntimeTerminalRename,
-  RuntimeTerminalSend,
+  RuntimeTerminalSetPaneTitle,
   RuntimeTerminalShow,
   RuntimeTerminalSplit,
   RuntimeTerminalWait
@@ -13,13 +12,12 @@ import type {
 import type { CommandHandler } from '../dispatch'
 import { shouldUseRendererBackedInteractiveTerminal } from '../codex-command-classification'
 import {
-  formatTerminalClose,
   formatTerminalCreate,
   formatTerminalFocus,
   formatTerminalList,
   formatTerminalRead,
   formatTerminalRename,
-  formatTerminalSend,
+  formatTerminalSetPaneTitle,
   formatTerminalShow,
   formatTerminalSplit,
   formatTerminalWait,
@@ -28,15 +26,28 @@ import {
 import {
   getOptionalPositiveIntegerFlag,
   getOptionalStringFlag,
-  getRequiredStringFlag
+  getRequiredStringFlag,
+  getRequiredStringFlagAllowingEmpty
 } from '../flags'
+import {
+  annotateOmittedHostScope,
+  type WithAnnotatedHostScope
+} from '../omitted-host-scope-selectors'
 import { RuntimeClientError } from '../runtime-client'
+import {
+  isSupportedWindowsShellOverride,
+  listSupportedWindowsShellOverrides
+} from '../../shared/windows-terminal-shell'
+import { TERMINAL_CREATE_SHELL_SELECTION_RUNTIME_CAPABILITY } from '../../shared/protocol-version'
 import {
   getBrowserWorktreeSelector,
   getOptionalWorktreeSelector,
   getRequiredWorktreeSelector,
   getTerminalHandle
 } from '../selectors'
+import { revealPairedTerminalOnLocalDesktop } from '../paired-terminal-desktop-reveal'
+import { terminalCloseHandler } from './terminal-close'
+import { terminalSendHandler } from './terminal-send'
 
 // Why: terminal wait legitimately needs to outlive the CLI's default RPC
 // timeout. Even without an explicit server timeout, the client must allow
@@ -44,18 +55,29 @@ import {
 const DEFAULT_TERMINAL_WAIT_RPC_TIMEOUT_MS = 5 * 60 * 1000
 
 const terminalFocusHandler: CommandHandler = async ({ flags, client, cwd, json }) => {
+  const terminal = await getTerminalHandle(flags, cwd, client)
   const result = await client.call<{ focus: RuntimeTerminalFocus }>('terminal.focus', {
-    terminal: await getTerminalHandle(flags, cwd, client)
+    terminal,
+    navigation: 'host'
   })
+  if (client.isRemote && result.result.focus.navigated === false) {
+    result.result.focus.navigated = await revealPairedTerminalOnLocalDesktop(client, terminal)
+  }
   printResult(result, json, formatTerminalFocus)
 }
 
 export const TERMINAL_HANDLERS: Record<string, CommandHandler> = {
   'terminal list': async ({ flags, client, cwd, json }) => {
-    const result = await client.call<RuntimeTerminalListResult>('terminal.list', {
-      worktree: await getOptionalWorktreeSelector(flags, 'worktree', cwd, client),
-      limit: getOptionalPositiveIntegerFlag(flags, 'limit')
-    })
+    const result = await client.call<WithAnnotatedHostScope<RuntimeTerminalListResult>>(
+      'terminal.list',
+      {
+        worktree: await getOptionalWorktreeSelector(flags, 'worktree', cwd, client),
+        limit: getOptionalPositiveIntegerFlag(flags, 'limit'),
+        // Why: agent JSON calls dominate; topology stays available through an explicit opt-in.
+        includeVisualLayouts: !json || flags.has('include-visual-layouts')
+      }
+    )
+    await annotateOmittedHostScope(result.result)
     printResult(result, json, formatTerminalList)
   },
   'terminal show': async ({ flags, client, cwd, json }) => {
@@ -73,23 +95,33 @@ export const TERMINAL_HANDLERS: Record<string, CommandHandler> = {
     if (cursorFlag !== undefined && cursor === undefined) {
       throw new RuntimeClientError('invalid_argument', '--cursor must be a non-negative integer')
     }
+    const screen = flags.get('screen') === true
+    // Why: a cursor pages through accumulated output. A screen read is the current frame and has
+    // nothing behind it to page, so accepting both would imply history that is not there.
+    if (screen && cursorFlag !== undefined) {
+      throw new RuntimeClientError(
+        'invalid_argument',
+        '--screen reads the current rendered screen, which has no cursor to page from. Use --cursor without --screen to page through accumulated output.'
+      )
+    }
     const result = await client.call<{ terminal: RuntimeTerminalRead }>('terminal.read', {
       terminal: await getTerminalHandle(flags, cwd, client),
       ...(cursor !== undefined ? { cursor } : {}),
+      ...(screen ? { screen: true } : {}),
       limit: getOptionalPositiveIntegerFlag(flags, 'limit')
     })
+    // Why: an older host drops the unknown `screen` param and answers with its ordinary stream
+    // read, which carries no source. Returning that silently is the exact failure this flag
+    // exists to prevent, so refuse rather than hand back the other question's answer.
+    if (screen && result.result.terminal.source === undefined) {
+      throw new RuntimeClientError(
+        'incompatible_runtime',
+        'This Orca host does not support --screen reads, so it answered with accumulated output instead of the rendered screen. Update Orca on the host, or drop --screen to read accumulated output deliberately.'
+      )
+    }
     printResult(result, json, formatTerminalRead)
   },
-  'terminal send': async ({ flags, client, cwd, json }) => {
-    const result = await client.call<{ send: RuntimeTerminalSend }>('terminal.send', {
-      terminal: await getTerminalHandle(flags, cwd, client),
-      text: getOptionalStringFlag(flags, 'text'),
-      enter: flags.get('enter') === true,
-      interrupt: flags.get('interrupt') === true,
-      client: { id: 'orca-cli', type: 'desktop' }
-    })
-    printResult(result, json, formatTerminalSend)
-  },
+  'terminal send': terminalSendHandler,
   'terminal wait': async ({ flags, client, cwd, json }) => {
     const timeoutMs = getOptionalPositiveIntegerFlag(flags, 'timeout-ms')
     const result = await client.call<{ wait: RuntimeTerminalWait }>(
@@ -123,6 +155,14 @@ export const TERMINAL_HANDLERS: Record<string, CommandHandler> = {
     })
     printResult(result, json, formatTerminalRename)
   },
+  'terminal set-pane-title': async ({ flags, client, cwd, json }) => {
+    const title = getRequiredStringFlagAllowingEmpty(flags, 'title')
+    const result = await client.call<{ paneTitle: RuntimeTerminalSetPaneTitle }>(
+      'terminal.setPaneTitle',
+      { terminal: await getTerminalHandle(flags, cwd, client), title }
+    )
+    printResult(result, json, formatTerminalSetPaneTitle)
+  },
   'terminal create': async ({ flags, client, cwd, json }) => {
     if (client.isRemote && !flags.has('worktree')) {
       throw new RuntimeClientError(
@@ -134,28 +174,53 @@ export const TERMINAL_HANDLERS: Record<string, CommandHandler> = {
     const useRendererBackedInteractiveTerminal =
       !client.isRemote && shouldUseRendererBackedInteractiveTerminal(command)
     const focus = flags.get('focus') === true
+    const shell = getOptionalStringFlag(flags, 'shell')
+    if (shell !== undefined) {
+      if (!isSupportedWindowsShellOverride(shell)) {
+        throw new RuntimeClientError(
+          'invalid_argument',
+          `--shell must be one of: ${listSupportedWindowsShellOverrides().join(', ')}`
+        )
+      }
+      // Why refused rather than sent hopefully: an older host strips the unknown param and hands
+      // back a healthy terminal running its DEFAULT shell. Nothing in that reply says the shell
+      // was ignored, so a caller that wanted cmd would drive a PowerShell session believing it won.
+      const status = await client.getCliStatus()
+      // An unreachable host reports no capabilities at all; that is not evidence it lacks --shell.
+      if (!status.result.runtime.reachable) {
+        throw new RuntimeClientError(
+          'runtime_unavailable',
+          'Orca could not verify --shell support on the execution host, so no terminal was created. Wait for the execution host to become reachable and retry.'
+        )
+      }
+      if (
+        status.result.runtime.capabilities?.includes(
+          TERMINAL_CREATE_SHELL_SELECTION_RUNTIME_CAPABILITY
+        ) !== true
+      ) {
+        throw new RuntimeClientError(
+          'incompatible_runtime',
+          'This Orca host does not support --shell, and would silently create a terminal running its default shell instead. No terminal was created; update Orca on the execution host.'
+        )
+      }
+    }
     const result = await client.call<{ terminal: RuntimeTerminalCreate }>('terminal.create', {
       worktree: await getBrowserWorktreeSelector(flags, cwd, client),
       command,
+      ...(shell !== undefined ? { shell } : {}),
       title: getOptionalStringFlag(flags, 'title'),
-      // Why: interactive local agent TUIs need the renderer-backed terminal
-      // path for browser-side features, but CLI creates must stay backgrounded
-      // unless the caller explicitly asks for focus.
       focus,
+      ...(focus ? { presentation: 'focused' } : {}),
+      // Compat: hosts before v1.4.211 (#22384) leave a background-started agent's startup queries
+      // unanswered, so they need this to start it in the window; newer hosts ignore it. Delete
+      // once the minimum supported host version is v1.4.211 or later.
       ...(useRendererBackedInteractiveTerminal ? { rendererBacked: true, activate: focus } : {})
     })
     printResult(result, json, formatTerminalCreate)
   },
-  // Why: `focus` and `switch` are aliases — register the same handler under
-  // both keys so the dispatch table stays a plain command-path lookup.
-  'terminal focus': terminalFocusHandler,
+  // `focus` resolves to this canonical path via CommandSpec.aliases before dispatch.
   'terminal switch': terminalFocusHandler,
-  'terminal close': async ({ flags, client, cwd, json }) => {
-    const result = await client.call<{ close: RuntimeTerminalClose }>('terminal.close', {
-      terminal: await getTerminalHandle(flags, cwd, client)
-    })
-    printResult(result, json, formatTerminalClose)
-  },
+  'terminal close': terminalCloseHandler,
   'terminal split': async ({ flags, client, cwd, json }) => {
     const directionFlag = getOptionalStringFlag(flags, 'direction')
     if (

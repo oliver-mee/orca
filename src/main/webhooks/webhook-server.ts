@@ -1,11 +1,11 @@
-import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'http'
+import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http'
 import type {
   Automation,
   AutomationRunStatus,
   AutomationWebhookDelivery,
   WebhookServerEndpoint
 } from '../../shared/automations-types'
-import type { WebhookServerSettings } from '../../shared/types'
+import type { WebhookServerSettings } from '../../shared/webhook-server-settings'
 import { captureWebhookDelivery, isWebhookTriggerEnabled } from '../../shared/automation-webhook'
 import { verifyWebhookSecret } from './webhook-secret'
 import { WebhookRateLimiter } from './webhook-rate-limiter'
@@ -84,7 +84,7 @@ function parseAutomationId(rawUrl: string | undefined): string | null {
  *  trigger automations. Generic by design: any JSON/text body is accepted and
  *  forwarded verbatim; the only provider-aware step is optional secret
  *  verification. Modeled on the agent-hooks server, but the bind interface is
- *  configurable (issue #2) so a self-hosted Git server can reach it. */
+ *  configurable (issue #12400) so a self-hosted Git server can reach it. */
 export class WebhookServer {
   private readonly deps: WebhookServerDeps
   private readonly rateLimiter: WebhookRateLimiter
@@ -141,12 +141,19 @@ export class WebhookServer {
         // Why: a bind failure (EADDRINUSE, EACCES) must not crash main. Record
         // it for the UI and resolve so startup continues; the listener stays
         // down until the user fixes the config.
-        this.lastError = err.message
-        this.server = null
+        if (this.server === server) {
+          this.lastError = err.message
+          this.server = null
+        }
         server.off('listening', onListening)
         resolve()
       }
       const onListening = (): void => {
+        if (this.server !== server) {
+          server.close()
+          resolve()
+          return
+        }
         server.off('error', onError)
         server.on('error', (err) => {
           this.lastError = err.message
@@ -157,6 +164,7 @@ export class WebhookServer {
         }
         resolve()
       }
+      server.once('close', resolve)
       server.once('error', onError)
       server.listen(settings.port, settings.bindAddress, onListening)
     })

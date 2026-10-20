@@ -1,10 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { spawn } from 'child_process'
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs'
-import { createServer } from 'http'
-import { tmpdir } from 'os'
-import { dirname, join } from 'path'
-import type { AddressInfo } from 'net'
+import { spawn } from 'node:child_process'
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { createServer } from 'node:http'
+import { tmpdir } from 'node:os'
+import { dirname, join } from 'node:path'
+import type { AddressInfo } from 'node:net'
 
 const { homedirMock } = vi.hoisted(() => ({
   homedirMock: vi.fn<() => string>()
@@ -19,6 +19,8 @@ vi.mock('os', async () => {
 })
 
 import { CommandCodeHookService } from './hook-service'
+
+import { wrapWindowsBatchHookCommand } from '../agent-hooks/windows-direct-cmd-hook-command'
 
 describe('CommandCodeHookService', () => {
   let homeDir: string
@@ -48,9 +50,38 @@ describe('CommandCodeHookService', () => {
     expect(config.hooks.PreToolUse[0].matcher).toBe('.*')
     expect(config.hooks.PostToolUse[0].matcher).toBe('.*')
     expect(config.hooks.Stop[0].matcher).toBeUndefined()
-    expect(config.hooks.PreToolUse[0].hooks[0].command).toContain('command-code-hook')
-    expect(config.hooks.PreToolUse[0].hooks[0].command).toContain(join(homeDir, '.orca'))
-    expect(config.hooks.PreToolUse[0].hooks[0].command).toMatch(/^if \[ -x /)
+    expect(config.hooks.PreToolUse[0].hooks[0].command).toMatch(
+      process.platform === 'win32'
+        ? wrapWindowsBatchHookCommand(
+            join(homeDir, '.orca', 'agent-hooks', 'command-code-hook.cmd')
+          )
+        : /command-code-hook/
+    )
+    if (process.platform !== 'win32') {
+      expect(config.hooks.PreToolUse[0].hooks[0].command).toContain(join(homeDir, '.orca'))
+    }
+    if (process.platform !== 'win32') {
+      expect(config.hooks.PreToolUse[0].hooks[0].command).toMatch(/^if \[ -f /)
+    }
+  })
+
+  // Why: runs on every OS; windows-hook-payload-delivery.test.ts runs each form under Command Code's shell.
+  it('registers the Windows batch hook command for every event', () => {
+    const platform = vi.spyOn(process, 'platform', 'get').mockReturnValue('win32')
+    try {
+      expect(new CommandCodeHookService().install().state).toBe('installed')
+      const command = wrapWindowsBatchHookCommand(
+        join(homeDir, '.orca', 'agent-hooks', 'command-code-hook.cmd')
+      )
+      const config = JSON.parse(
+        readFileSync(join(homeDir, '.commandcode', 'settings.json'), 'utf8')
+      )
+      for (const eventName of ['PreToolUse', 'PostToolUse', 'Stop']) {
+        expect(config.hooks[eventName][0].hooks[0].command).toBe(command)
+      }
+    } finally {
+      platform.mockRestore()
+    }
   })
 
   it('installs a hook script that can recover the endpoint when Command Code strips token env', () => {
@@ -65,12 +96,11 @@ describe('CommandCodeHookService', () => {
       expect(script).toContain('orca-dev\\agent-hooks')
       expect(script).toContain('set ORCA_AGENT_HOOK_PORT=')
     } else {
-      expect(script).toContain('Command Code strips TOKEN-like env vars')
-      expect(script).toContain('Command Code sanitizes hook subprocess env')
       expect(script).toContain('__orca_read_ancestor_var')
       expect(script).toContain('__orca_fill_from_endpoint_file')
       expect(script).toContain('[ "$__orca_endpoint_port" != "$ORCA_AGENT_HOOK_PORT" ]')
       expect(script).toContain('ORCA_PANE_KEY')
+      expect(script).toContain('ORCA_AGENT_LAUNCH_TOKEN')
       expect(script).toContain('orca-dev/agent-hooks')
       expect(script).toContain('endpoint_port=')
     }
@@ -101,7 +131,10 @@ describe('CommandCodeHookService', () => {
         body += chunk
       })
       req.on('end', () => {
-        requests.push({ body, token: req.headers['x-orca-agent-hook-token'] })
+        requests.push({
+          body,
+          token: req.headers['x-orca-agent-hook-token']
+        })
         res.statusCode = 204
         res.end()
       })

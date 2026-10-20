@@ -1,5 +1,8 @@
-import type { GlobalSettings } from '../../../../shared/types'
+import type { GlobalSettings } from '../../../../shared/global-settings-types'
+import type { ProjectExecutionRuntimeResolution } from '../../../../shared/project-execution-runtime'
+import type { SkillDiscoveryTarget } from '../../../../shared/skills'
 import { translate } from '@/i18n/i18n'
+import { getProjectAgentSkillTerminalShellOverride } from '@/lib/project-skill-runtime'
 import type { LocalAgentRuntime } from '../settings/CliSkillRuntimeSetup'
 
 const LOCAL_DISMISS_STORAGE_KEY_PREFIX = 'orca.linearTicketsSkill.setupDismissed'
@@ -9,7 +12,6 @@ export type LinearAgentSkillPromptSettings = Pick<
   | 'localAgentRuntime'
   | 'localAgentWslDistro'
   | 'terminalWindowsShell'
-  | 'terminalWindowsWslDistro'
   | 'activeRuntimeEnvironmentId'
 >
 
@@ -23,7 +25,8 @@ export function getCurrentPlatform(): NodeJS.Platform {
 export function getLinearPromptAgentRuntime(
   settings: LinearAgentSkillPromptSettings | null | undefined,
   currentPlatform: NodeJS.Platform,
-  remote: boolean
+  remote: boolean,
+  projectRuntime?: ProjectExecutionRuntimeResolution
 ): LocalAgentRuntime {
   if (remote) {
     // Why: this prompt opens a local terminal; remote environments need their
@@ -33,11 +36,13 @@ export function getLinearPromptAgentRuntime(
       label: currentPlatform === 'win32' ? 'Windows' : 'This device'
     }
   }
-  const selectedRuntime =
-    settings?.localAgentRuntime ?? (settings?.terminalWindowsShell === 'wsl.exe' ? 'wsl' : 'host')
+  const resolvedProjectRuntime = getProjectAgentRuntime(projectRuntime, currentPlatform)
+  if (resolvedProjectRuntime) {
+    return resolvedProjectRuntime
+  }
+  const selectedRuntime = settings?.localAgentRuntime ?? 'host'
   if (currentPlatform === 'win32' && selectedRuntime === 'wsl') {
-    const selectedDistro =
-      settings?.localAgentWslDistro?.trim() || settings?.terminalWindowsWslDistro?.trim() || null
+    const selectedDistro = settings?.localAgentWslDistro?.trim() || null
     return {
       runtime: 'wsl',
       wslDistro: selectedDistro,
@@ -52,18 +57,68 @@ export function getLinearPromptAgentRuntime(
   }
 }
 
+function getProjectAgentRuntime(
+  projectRuntime: ProjectExecutionRuntimeResolution | undefined,
+  currentPlatform: NodeJS.Platform
+): LocalAgentRuntime | null {
+  if (!projectRuntime) {
+    return null
+  }
+  if (projectRuntime.status === 'repair-required') {
+    // Why: a repair state still owns the project runtime; falling back to host
+    // here would mix skill setup state between Windows and WSL.
+    return getWslAgentRuntime(projectRuntime.repair.preferredRuntime.distro)
+  }
+  if (projectRuntime.runtime.kind === 'wsl') {
+    return getWslAgentRuntime(projectRuntime.runtime.distro)
+  }
+  return {
+    runtime: 'host',
+    label: currentPlatform === 'win32' ? 'Windows' : 'This device'
+  }
+}
+
+function getWslAgentRuntime(distro: string | null): LocalAgentRuntime {
+  return {
+    runtime: 'wsl',
+    wslDistro: distro,
+    label: distro
+      ? `WSL ${distro}`
+      : translate('auto.components.sidebar.LinearAgentSkillSetupPrompt.wslLabel', 'WSL default')
+  }
+}
+
 export function getLinearPromptTerminalShellOverride(
   currentPlatform: NodeJS.Platform,
   settings: LinearAgentSkillPromptSettings | null | undefined,
   runtime: LocalAgentRuntime
 ): string | undefined {
-  if (currentPlatform !== 'win32') {
-    return undefined
+  return getProjectAgentSkillTerminalShellOverride(currentPlatform, settings, runtime)
+}
+
+export function getLinearPromptSetupCheckIdentity(args: {
+  remote: boolean
+  runtime: LocalAgentRuntime
+  projectRuntime?: ProjectExecutionRuntimeResolution
+  activeRuntimeEnvironmentId?: string | null
+}): string {
+  return JSON.stringify({
+    remote: args.remote,
+    runtime: args.runtime.runtime,
+    wslDistro: args.runtime.wslDistro ?? null,
+    projectRuntime: getProjectRuntimeIdentity(args.projectRuntime),
+    activeRuntimeEnvironmentId: args.activeRuntimeEnvironmentId ?? null
+  })
+}
+
+export function getLinearPromptSkillDiscoveryTarget(
+  runtime: LocalAgentRuntime,
+  projectRuntime?: ProjectExecutionRuntimeResolution
+): SkillDiscoveryTarget | undefined {
+  if (projectRuntime) {
+    return { projectRuntime }
   }
-  if (runtime.runtime === 'wsl') {
-    return 'powershell.exe'
-  }
-  return settings?.terminalWindowsShell?.toLowerCase() === 'wsl.exe' ? 'powershell.exe' : undefined
+  return runtime.runtime === 'wsl' ? { runtime: 'wsl', wslDistro: runtime.wslDistro } : undefined
 }
 
 export function getLocalDismissStorageKey(runtime: LocalAgentRuntime): string {
@@ -78,4 +133,15 @@ export function readLocalDismissed(storageKey: string): boolean {
     return false
   }
   return localStorage.getItem(storageKey) === '1'
+}
+
+function getProjectRuntimeIdentity(
+  projectRuntime: ProjectExecutionRuntimeResolution | undefined
+): string | null {
+  if (!projectRuntime) {
+    return null
+  }
+  return projectRuntime.status === 'resolved'
+    ? projectRuntime.runtime.cacheKey
+    : projectRuntime.repair.cacheKey
 }

@@ -21,6 +21,16 @@ export function getAutomationRerunPendingRemainingMs({
   return Math.max(0, pendingStartedAt + AUTOMATION_RERUN_PENDING_MIN_VISIBLE_MS - now)
 }
 
+export async function waitForAutomationRerunPendingVisibility(
+  pendingStartedAt: number
+): Promise<void> {
+  const remainingMs = getAutomationRerunPendingRemainingMs({ pendingStartedAt })
+  if (remainingMs <= 0) {
+    return
+  }
+  await new Promise<void>((resolve) => window.setTimeout(resolve, remainingMs))
+}
+
 export function canRerunAutomationRun({
   automation,
   run
@@ -41,13 +51,17 @@ export function canRerunAutomationRun({
 export function getAutomationRunViewState({
   run,
   workspaceExists,
-  terminalTabExists
+  terminalTargetExists,
+  terminalOnPairedServer = false
 }: {
   run: AutomationRun
   workspaceExists: boolean
-  terminalTabExists: boolean
+  terminalTargetExists: boolean
+  /** The workspace's paired server holds the terminal; only it can say whether it still lives. */
+  terminalOnPairedServer?: boolean
 }): AutomationRunViewState {
-  if (run.workspaceId && workspaceExists && run.terminalSessionId && terminalTabExists) {
+  const hasTerminalIdentity = Boolean(run.terminalPaneKey && run.terminalPtyId)
+  if (run.workspaceId && workspaceExists && terminalTargetExists) {
     return {
       availability: 'terminal',
       actionLabel: 'View run',
@@ -56,13 +70,30 @@ export function getAutomationRunViewState({
     }
   }
 
-  if (run.workspaceId && workspaceExists) {
+  if (run.workspaceId && workspaceExists && hasTerminalIdentity && terminalOnPairedServer) {
+    return {
+      availability: 'terminal',
+      actionLabel: 'View run',
+      statusLabel: 'Run terminal is on the paired server.',
+      canOpen: true
+    }
+  }
+
+  if (run.workspaceId && workspaceExists && hasTerminalIdentity) {
+    return {
+      availability: 'terminal',
+      actionLabel: 'View run',
+      statusLabel: 'Run terminal is unavailable.',
+      canOpen: true
+    }
+  }
+
+  // Why: a run that never dispatched left no agent to resume; opening seeds an empty shell (STA-10103).
+  if (run.workspaceId && workspaceExists && run.dispatchedAt !== null) {
     return {
       availability: 'workspace',
-      actionLabel: 'Resume workspace',
-      statusLabel: run.terminalSessionId
-        ? 'Workspace is available; original terminal is closed.'
-        : 'Workspace is available.',
+      actionLabel: 'Open workspace',
+      statusLabel: 'Workspace is available.',
       canOpen: true
     }
   }

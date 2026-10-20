@@ -3,10 +3,12 @@ import type { LucideIcon } from 'lucide-react'
 import type { CmdJQuickActionAvailability, CmdJQuickActionContext } from './quick-action-context'
 import {
   getCurrentWorkspaceActionAvailability,
+  getBrowserWorkspaceActionAvailability,
   getWorkspaceScopedActionAvailability
 } from './quick-action-context'
 import { translate } from '@/i18n/i18n'
 import { createLocalizedCatalog } from '@/i18n/localized-catalog'
+import { getNativeChatSplitQuickActions } from './native-chat-split-quick-actions'
 
 export type CmdJQuickActionRunResult =
   | { status: 'ok' }
@@ -22,6 +24,8 @@ export type CmdJQuickAction = {
   description: string
   icon: LucideIcon
   verbKeywords: string[]
+  /** Query-bound actions must still match the live input when selected. */
+  sourceQuery?: string
   isAvailable: (ctx: CmdJQuickActionContext) => CmdJQuickActionAvailability
   run: (ctx: CmdJQuickActionContext) => Promise<CmdJQuickActionRunResult>
 }
@@ -53,6 +57,17 @@ async function runWorkspaceAction(
   return { status: 'ok' }
 }
 
+export async function runBrowserWorkspaceAction(
+  ctx: CmdJQuickActionContext,
+  run: (groupId: string) => Promise<void>
+): Promise<CmdJQuickActionRunResult> {
+  const availability = getBrowserWorkspaceActionAvailability(ctx)
+  if (!availability.available) {
+    return { status: 'unavailable', reason: availability.reason }
+  }
+  return runWorkspaceAction(ctx, run)
+}
+
 // Why: Cmd+J actions are for high-frequency, safe, context-light verbs.
 // Context-heavy setup flows such as Ghostty import and browser cookie import
 // stay inside their Settings panes where explanatory UI and failure states fit.
@@ -72,8 +87,8 @@ export const getCmdJQuickActions = createLocalizedCatalog((): CmdJQuickAction[] 
       translate('auto.components.cmd.j.quick.actions.verbs.openBrowser', 'open browser'),
       translate('auto.components.cmd.j.quick.actions.verbs.browserTab', 'browser tab')
     ],
-    isAvailable: workspaceActionAvailability,
-    run: (ctx) => runWorkspaceAction(ctx, ctx.openNewBrowserTab)
+    isAvailable: getBrowserWorkspaceActionAvailability,
+    run: (ctx) => runBrowserWorkspaceAction(ctx, ctx.openNewBrowserTab)
   },
   {
     id: 'new-markdown-file',
@@ -112,6 +127,7 @@ export const getCmdJQuickActions = createLocalizedCatalog((): CmdJQuickAction[] 
     isAvailable: workspaceActionAvailability,
     run: (ctx) => runWorkspaceAction(ctx, ctx.openNewTerminalTab)
   },
+  ...getNativeChatSplitQuickActions(),
   {
     id: CREATE_WORKSPACE_QUICK_ACTION_ID,
     kind: 'action',

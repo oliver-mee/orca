@@ -2,9 +2,11 @@ import type { Editor } from '@tiptap/react'
 import { toast } from 'sonner'
 import { getConnectionId } from '@/lib/connection-context'
 import { useAppStore } from '@/store'
-import { settingsForRuntimeOwner } from '@/runtime/runtime-rpc-client'
+import { requireRuntimeTargetForFileOwner } from '@/lib/file-owner-runtime-target'
 import { extractIpcErrorMessage } from './rich-markdown-ipc-error-message'
 import { insertRichMarkdownImageFromPath } from './rich-markdown-image-insert'
+import { captureRichMarkdownImageInsertionTarget } from './rich-markdown-image-insertion-target'
+import { showRichMarkdownImageInsertionCanceled } from './rich-markdown-image-insertion-feedback'
 
 export type RichMarkdownImagePasteArgs = {
   editor: Editor | null
@@ -36,11 +38,18 @@ export function handleRichMarkdownImagePaste({
   }
 
   event.preventDefault()
-  const insertPos = editor.state.selection.from
+  const target = captureRichMarkdownImageInsertionTarget(editor)
+  if (!target) {
+    return true
+  }
 
   void saveClipboardImageForMarkdownPaste(worktreeId, runtimeEnvironmentId)
     .then((sourcePath) => {
       if (!sourcePath) {
+        return
+      }
+      if (!target.getRange()) {
+        showRichMarkdownImageInsertionCanceled()
         return
       }
       return insertRichMarkdownImageFromPath({
@@ -49,12 +58,13 @@ export function handleRichMarkdownImagePaste({
         sourcePath,
         worktreeId,
         runtimeEnvironmentId,
-        insertPos
+        getInsertionRange: target.getRange
       })
     })
     .catch((err) => {
       toast.error(extractIpcErrorMessage(err, 'Failed to insert image.'))
     })
+    .finally(target.dispose)
 
   return true
 }
@@ -63,8 +73,9 @@ async function saveClipboardImageForMarkdownPaste(
   worktreeId: string | null,
   runtimeEnvironmentId?: string | null
 ): Promise<string | null> {
-  const settings = settingsForRuntimeOwner(useAppStore.getState().settings, runtimeEnvironmentId)
-  const hasRuntimeOwner = Boolean(settings?.activeRuntimeEnvironmentId?.trim())
+  const hasRuntimeOwner =
+    requireRuntimeTargetForFileOwner(useAppStore.getState(), worktreeId, runtimeEnvironmentId)
+      .kind === 'environment'
   // Why: runtime-owned notes use runtime-side clipboard import; routing this
   // temp save through SSH would put the source file on the wrong machine.
   const connectionId = hasRuntimeOwner ? undefined : (getConnectionId(worktreeId) ?? undefined)

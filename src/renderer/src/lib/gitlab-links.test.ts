@@ -4,6 +4,7 @@ import {
   parseGitLabIssueOrMRLink,
   parseGitLabIssueOrMRNumber
 } from './gitlab-links'
+import { WORK_ITEM_LINK_QUERY_MAX_BYTES } from './work-item-link-query-bounds'
 
 describe('parseGitLabIssueOrMRNumber', () => {
   it('parses bare numbers, # prefix, and ! prefix', () => {
@@ -21,6 +22,16 @@ describe('parseGitLabIssueOrMRNumber', () => {
 
   it('parses URLs from self-hosted GitLab instances', () => {
     expect(parseGitLabIssueOrMRNumber('https://gitlab.example.com/team/api/-/issues/7')).toBe(7)
+  })
+
+  it('parses modern /-/work_items/<iid> issue URLs', () => {
+    expect(parseGitLabIssueOrMRNumber('https://gitlab.com/stablyai/orca/-/work_items/923')).toBe(
+      923
+    )
+    expect(
+      parseGitLabIssueOrMRNumber('https://gitlab.example.com:8443/team/api/-/work_items/7')
+    ).toBe(7)
+    expect(parseGitLabIssueOrMRNumber('https://gitlab.com/g/p/-/work_items/923/designs')).toBe(923)
   })
 
   it('parses URLs with nested group paths', () => {
@@ -89,6 +100,21 @@ describe('parseGitLabIssueOrMRLink', () => {
     })
   })
 
+  it('treats /-/work_items/<iid> as an issue work item', () => {
+    expect(parseGitLabIssueOrMRLink('https://gitlab.com/stablyai/orca/-/work_items/923')).toEqual({
+      slug: { host: 'gitlab.com', path: 'stablyai/orca' },
+      number: 923,
+      type: 'issue'
+    })
+    expect(
+      parseGitLabIssueOrMRLink('https://gitlab.example.com:8443/team/api/-/work_items/7')
+    ).toEqual({
+      slug: { host: 'gitlab.example.com:8443', path: 'team/api' },
+      number: 7,
+      type: 'issue'
+    })
+  })
+
   it('extracts slug, number, and type from URLs with trailing page segments', () => {
     expect(parseGitLabIssueOrMRLink('https://gitlab.com/g/p/-/merge_requests/77/diffs')).toEqual({
       slug: { host: 'gitlab.com', path: 'g/p' },
@@ -149,5 +175,20 @@ describe('normalizeGitLabLinkQuery', () => {
 
   it('returns empty for empty input', () => {
     expect(normalizeGitLabLinkQuery('   ')).toEqual({ query: '', directNumber: null })
+  })
+
+  it('rejects oversized pasted link queries without echoing their content', () => {
+    const secret = 'gitlab-link-secret'
+    const result = normalizeGitLabLinkQuery(secret + 'x'.repeat(WORK_ITEM_LINK_QUERY_MAX_BYTES))
+
+    expect(result).toEqual({ query: '', directNumber: null, tooLarge: true })
+  })
+
+  it('rejects oversized whitespace before trimming link queries', () => {
+    expect(normalizeGitLabLinkQuery(' '.repeat(WORK_ITEM_LINK_QUERY_MAX_BYTES + 1))).toEqual({
+      query: '',
+      directNumber: null,
+      tooLarge: true
+    })
   })
 })

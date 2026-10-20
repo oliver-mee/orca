@@ -1,17 +1,22 @@
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import type { GitHubWorkItem } from '../../../shared/types'
+import type { GitHubWorkItem } from '../../../shared/github/work-item-types'
 import {
-  appendGitHubPRRequestedReviewers,
+  GITHUB_PR_REVIEWER_INPUT_MAX_BYTES,
   getGitHubPRPrimaryReviewer,
   getGitHubPRReviewerRows,
   getGitHubPRReviewLabel,
-  normalizeGitHubReviewerLogins
+  normalizeGitHubReviewerLogins,
+  parseGitHubReviewerInputLogins
 } from './github-pr-reviewer-display'
 
 function item(patch: Partial<GitHubWorkItem>): GitHubWorkItem {
   return patch as GitHubWorkItem
 }
+
+afterEach(() => {
+  vi.restoreAllMocks()
+})
 
 describe('GitHub PR reviewer display', () => {
   it('shows the requested reviewer instead of a request count', () => {
@@ -104,18 +109,6 @@ describe('GitHub PR reviewer display', () => {
     ])
   })
 
-  it('appends requested reviewers without duplicating existing logins', () => {
-    expect(
-      appendGitHubPRRequestedReviewers(
-        [{ login: 'ExampleReviewer', name: null, avatarUrl: 'avatar-1' }],
-        ['examplereviewer', '@new-reviewer']
-      )
-    ).toEqual([
-      { login: 'ExampleReviewer', name: null, avatarUrl: 'avatar-1' },
-      { login: 'new-reviewer', name: null, avatarUrl: '' }
-    ])
-  })
-
   it('normalizes reviewer input before sending it to GitHub', () => {
     expect(
       normalizeGitHubReviewerLogins(
@@ -123,5 +116,25 @@ describe('GitHub PR reviewer display', () => {
         new Set(['existing'])
       )
     ).toEqual(['ExampleReviewer', 'new-reviewer'])
+  })
+
+  it('parses pasted reviewer input without regex splitting', () => {
+    const split = vi.spyOn(String.prototype, 'split')
+    const input = ['@ExampleReviewer,', String.fromCharCode(160), '@new-reviewer\nthird'].join('')
+
+    expect(parseGitHubReviewerInputLogins(input)).toEqual([
+      '@ExampleReviewer',
+      '@new-reviewer',
+      'third'
+    ])
+    expect(split).not.toHaveBeenCalled()
+  })
+
+  it('rejects oversized reviewer input before tokenizing pasted text', () => {
+    const split = vi.spyOn(String.prototype, 'split')
+    const oversized = 'secret-reviewer,'.repeat(GITHUB_PR_REVIEWER_INPUT_MAX_BYTES)
+
+    expect(parseGitHubReviewerInputLogins(oversized)).toEqual([])
+    expect(split).not.toHaveBeenCalled()
   })
 })

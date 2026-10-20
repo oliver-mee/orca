@@ -1,6 +1,8 @@
-import React, { lazy } from 'react'
+import React from 'react'
+import { lazyWithRetry as lazy } from '@/lib/lazy-with-retry'
 import type { OpenFile } from '@/store/slices/editor'
-import type { GitDiffResult, GitStatusEntry } from '../../../../shared/types'
+import type { GitDiffResult } from '../../../../shared/git-diff-compare-types'
+import type { GitStatusEntry } from '../../../../shared/git-status-types'
 import { ConflictBanner } from './ConflictComponents'
 import { getDiffContentSignature } from './diff-content-signature'
 import { translate } from '@/i18n/i18n'
@@ -33,7 +35,7 @@ export function ChangesModeView({
   viewStateScopeId: string
   diffViewStateKey: string
   onContentChange: (content: string) => void
-  onSave: (content: string) => Promise<void>
+  onSave: (content: string) => Promise<boolean>
 }): React.JSX.Element {
   if (!dc) {
     return (

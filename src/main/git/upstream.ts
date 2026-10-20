@@ -1,19 +1,52 @@
-import type { GitPushTarget, GitUpstreamStatus } from '../../shared/types'
+import type { GitUpstreamStatus } from '../../shared/git-status-types'
+import type { GitPushTarget } from '../../shared/worktree/types'
 import { upstreamOnlyCommitsArePatchEquivalent } from '../../shared/git-upstream-status'
 import { isNoUpstreamError, normalizeGitErrorMessage } from '../../shared/git-remote-error'
 import { getEffectiveGitUpstreamStatus } from '../../shared/git-effective-upstream'
 import { getPublishTargetStatus } from '../../shared/git-publish-target-status'
 import { gitExecFileAsync } from './runner'
 import { validateGitPushTarget } from './push-target-validation'
+import { nativeAndWslGitUpstreamStatusReadOwner } from './git-upstream-status-read-owner'
+import type { GitAdmissionTier } from './command-runner/git-exec-options'
+
+type GitExecOptions = {
+  wslDistro?: string
+  admissionTier?: GitAdmissionTier
+}
+
+export function invalidateGitUpstreamStatusReads(): void {
+  nativeAndWslGitUpstreamStatusReadOwner.invalidate()
+}
+
+function gitExecOptions(
+  cwd: string,
+  options: GitExecOptions = {}
+): { cwd: string; wslDistro?: string; admissionTier?: GitAdmissionTier } {
+  return {
+    cwd,
+    ...(options.wslDistro ? { wslDistro: options.wslDistro } : {}),
+    ...(options.admissionTier ? { admissionTier: options.admissionTier } : {})
+  }
+}
 
 async function getBehindCommitsArePatchEquivalent(
   worktreePath: string,
-  upstreamName: string
+  upstreamName: string,
+  options: GitExecOptions = {}
 ): Promise<boolean> {
   try {
     const { stdout } = await gitExecFileAsync(
-      ['log', '--oneline', '--cherry-mark', '--right-only', `HEAD...${upstreamName}`, '--'],
-      { cwd: worktreePath }
+      [
+        'log',
+        '--no-show-signature',
+        '--no-color',
+        '--oneline',
+        '--cherry-mark',
+        '--right-only',
+        `HEAD...${upstreamName}`,
+        '--'
+      ],
+      gitExecOptions(worktreePath, options)
     )
     return upstreamOnlyCommitsArePatchEquivalent(stdout)
   } catch {
@@ -23,22 +56,23 @@ async function getBehindCommitsArePatchEquivalent(
   }
 }
 
-export async function getUpstreamStatus(
+async function readUpstreamStatus(
   worktreePath: string,
-  pushTarget?: GitPushTarget
+  pushTarget?: GitPushTarget,
+  options: GitExecOptions = {}
 ): Promise<GitUpstreamStatus> {
   try {
     if (pushTarget) {
-      const target = await validateGitPushTarget(worktreePath, pushTarget)
+      const target = await validateGitPushTarget(worktreePath, pushTarget, options)
       return await getPublishTargetStatus(
-        (args) => gitExecFileAsync(args, { cwd: worktreePath }),
+        (args) => gitExecFileAsync(args, gitExecOptions(worktreePath, options)),
         target,
-        (upstreamName) => getBehindCommitsArePatchEquivalent(worktreePath, upstreamName)
+        (upstreamName) => getBehindCommitsArePatchEquivalent(worktreePath, upstreamName, options)
       )
     }
     return await getEffectiveGitUpstreamStatus(
-      (args) => gitExecFileAsync(args, { cwd: worktreePath }),
-      (upstreamName) => getBehindCommitsArePatchEquivalent(worktreePath, upstreamName)
+      (args) => gitExecFileAsync(args, gitExecOptions(worktreePath, options)),
+      (upstreamName) => getBehindCommitsArePatchEquivalent(worktreePath, upstreamName, options)
     )
   } catch (error) {
     // Why: we only swallow clearly-no-upstream signals — that's an expected
@@ -57,4 +91,20 @@ export async function getUpstreamStatus(
     // the IPC boundary so renderers don't see execFile stderr preambles or local paths.
     throw new Error(normalizeGitErrorMessage(error, 'upstream'))
   }
+}
+
+export function getUpstreamStatus(
+  worktreePath: string,
+  pushTarget?: GitPushTarget,
+  options: GitExecOptions = {}
+): Promise<GitUpstreamStatus> {
+  const executionIdentity = options.wslDistro
+    ? ({ kind: 'wsl', distro: options.wslDistro } as const)
+    : ({ kind: 'native' } as const)
+  return nativeAndWslGitUpstreamStatusReadOwner.read(
+    executionIdentity,
+    worktreePath,
+    pushTarget,
+    () => readUpstreamStatus(worktreePath, pushTarget, options)
+  )
 }

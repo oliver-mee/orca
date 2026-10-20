@@ -1,11 +1,12 @@
 import type { JSX } from 'react'
 import {
-  AGENT_SKILL_CLI_PREREQUISITE_NOTICE,
-  ensureOrcaCliAvailableForAgentSkillTerminal
-} from '@/lib/agent-skill-cli-prerequisite'
-import { ORCHESTRATION_SKILL_INSTALL_COMMAND } from '@/lib/orchestration-install-command'
+  ORCHESTRATION_SKILL_INSTALL_COMMAND,
+  ORCHESTRATION_SKILL_NAME
+} from '@/lib/agent-feature-install-commands'
 import type { InstalledAgentSkillState } from '@/hooks/useInstalledAgentSkills'
+import { useActiveProjectSkillRuntime } from '@/hooks/useActiveProjectSkillRuntime'
 import { AgentSkillSetupPanel } from './AgentSkillSetupPanel'
+import { buildSkillCommandForRuntime } from './CliSkillRuntimeSetup'
 import { useAppStore } from '@/store'
 import { translate } from '@/i18n/i18n'
 
@@ -15,6 +16,13 @@ export function OrchestrationSetupCard(props: {
   skill: InstalledAgentSkillState
 }): JSX.Element {
   const { compact, terminalHeightPx, skill } = props
+  const activeSkillRuntime = useActiveProjectSkillRuntime()
+  const installCommand = !activeSkillRuntime.installDisabledReason
+    ? buildSkillCommandForRuntime(
+        ORCHESTRATION_SKILL_INSTALL_COMMAND,
+        activeSkillRuntime.agentRuntime
+      )
+    : ORCHESTRATION_SKILL_INSTALL_COMMAND
 
   const setupPanel = (
     <AgentSkillSetupPanel
@@ -27,20 +35,24 @@ export function OrchestrationSetupCard(props: {
         'auto.components.settings.OrchestrationSetupCard.e7d2a5146c',
         'Enables agents to hand off context and coordinate work through Orca.'
       )}
-      command={ORCHESTRATION_SKILL_INSTALL_COMMAND}
+      command={installCommand}
       terminalTitle="Orchestration setup"
       terminalAriaLabel="Orchestration skill install terminal"
       terminalWorktreeId="feature-wall-orchestration-skill-terminal"
+      terminalShellOverride={activeSkillRuntime.terminalShellOverride}
+      terminalRuntime={activeSkillRuntime.agentRuntime}
       installed={skill.installed}
       loading={skill.loading}
-      error={skill.error}
+      error={activeSkillRuntime.installDisabledReason ?? skill.error}
+      installDisabled={Boolean(activeSkillRuntime.installDisabledReason)}
       terminalHeightPx={terminalHeightPx}
-      preInstallNotice={AGENT_SKILL_CLI_PREREQUISITE_NOTICE}
-      onBeforeOpenTerminal={async () => {
+      onBeforeOpenTerminal={() => {
         useAppStore.getState().recordFeatureInteraction('agent-orchestration-setup')
-        await ensureOrcaCliAvailableForAgentSkillTerminal()
       }}
       onRecheck={skill.refresh}
+      freshnessSkillName={
+        activeSkillRuntime.canUseLocalSkillFreshness ? ORCHESTRATION_SKILL_NAME : undefined
+      }
     />
   )
 

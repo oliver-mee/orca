@@ -1,8 +1,8 @@
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs'
-import { tmpdir } from 'os'
-import { join } from 'path'
-import type * as osModule from 'os'
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import type * as osModule from 'node:os'
 
 const { getPathMock, homedirMock } = vi.hoisted(() => ({
   getPathMock: vi.fn<(name: string) => string>(),
@@ -24,6 +24,7 @@ vi.mock('os', async (importOriginal) => {
 })
 
 import { GeminiHookService } from './hook-service'
+import { wrapWindowsBatchHookCommand } from '../agent-hooks/windows-direct-cmd-hook-command'
 
 describe('GeminiHookService', () => {
   let homeDir: string
@@ -100,10 +101,31 @@ describe('GeminiHookService', () => {
     expect(config.hooks.PreToolUse).toBeUndefined()
     expect(config.hooks.BeforeAgent).toHaveLength(2)
     expect(config.hooks.BeforeAgent[0].hooks[0].command).toBe('echo user-before-agent')
-    expect(config.hooks.BeforeAgent[1].hooks[0].command).toContain(managedHookPath)
-    expect(config.hooks.AfterAgent[0].hooks[0].command).toContain(managedHookPath)
-    expect(config.hooks.AfterTool[0].hooks[0].command).toContain(managedHookPath)
-    expect(config.hooks.BeforeTool[0].hooks[0].command).toContain(managedHookPath)
+    const managedCommandPattern =
+      process.platform === 'win32'
+        ? wrapWindowsBatchHookCommand(managedHookPath)
+        : new RegExp(managedHookPath.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
+    expect(config.hooks.BeforeAgent[1].hooks[0].command).toMatch(managedCommandPattern)
+    expect(config.hooks.AfterAgent[0].hooks[0].command).toMatch(managedCommandPattern)
+    expect(config.hooks.AfterTool[0].hooks[0].command).toMatch(managedCommandPattern)
+    expect(config.hooks.BeforeTool[0].hooks[0].command).toMatch(managedCommandPattern)
+  })
+
+  // Why: runs on every OS; windows-hook-payload-delivery.test.ts runs each form under Gemini's shell.
+  it('registers the Windows batch hook command for every event', () => {
+    const platform = vi.spyOn(process, 'platform', 'get').mockReturnValue('win32')
+    try {
+      expect(new GeminiHookService().install().state).toBe('installed')
+      const command = wrapWindowsBatchHookCommand(
+        join(homeDir, '.orca', 'agent-hooks', 'gemini-hook.cmd')
+      )
+      const config = JSON.parse(readFileSync(join(homeDir, '.gemini', 'settings.json'), 'utf8'))
+      for (const eventName of ['BeforeAgent', 'AfterAgent', 'AfterTool', 'BeforeTool']) {
+        expect(config.hooks[eventName].at(-1).hooks[0].command).toBe(command)
+      }
+    } finally {
+      platform.mockRestore()
+    }
   })
 
   it('preserves user-authored PreToolUse hooks while sweeping stale managed Gemini hooks', () => {
@@ -147,6 +169,10 @@ describe('GeminiHookService', () => {
 
     expect(status.state).toBe('installed')
     expect(preToolCommands).toEqual(['echo user-authored'])
-    expect(config.hooks.BeforeTool[0].hooks[0].command).toContain(managedHookFileName)
+    expect(config.hooks.BeforeTool[0].hooks[0].command).toMatch(
+      process.platform === 'win32'
+        ? wrapWindowsBatchHookCommand(join(homeDir, '.orca', 'agent-hooks', managedHookFileName))
+        : new RegExp(managedHookFileName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
+    )
   })
 })

@@ -7,7 +7,7 @@ import {
   DropdownMenuTrigger
 } from '@/components/ui/dropdown-menu'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
-import { Ellipsis, ExternalLink, MonitorUp, Unlink } from 'lucide-react'
+import { Copy, Ellipsis, ExternalLink, Globe, MonitorUp } from 'lucide-react'
 import { translate } from '@/i18n/i18n'
 import {
   WorktreeCardDetailSection,
@@ -17,12 +17,15 @@ import { DetailHeader, MetadataActionIcon } from './WorktreeCardMetadataControls
 import { ReviewChecksBadge, ReviewStateBadge } from './WorktreeCardMetadataStatusBadges'
 import type { WorktreeCardPrDisplay } from './worktree-card-pr-display'
 import { getProviderName, getReviewLabel, ReviewIcon } from './worktree-review-helpers'
+import { HostedReviewUnlinkMenuItem } from '@/components/HostedReviewUnlinkMenuItem'
 
 type WorktreeCardReviewDetailSectionProps = {
   review: WorktreeCardPrDisplay | null
   reviewMenuOpen: boolean
   onReviewMenuOpenChange: (open: boolean) => void
   onOpenReviewInOrca?: (event: React.MouseEvent) => void
+  onCopyReviewLink?: () => void
+  onOpenReviewInBrowser?: (url: string) => void
   onUnlinkReview?: () => void
   closeHover: () => void
 }
@@ -32,6 +35,8 @@ export function WorktreeCardReviewDetailSection({
   reviewMenuOpen,
   onReviewMenuOpenChange,
   onOpenReviewInOrca,
+  onCopyReviewLink,
+  onOpenReviewInBrowser,
   onUnlinkReview,
   closeHover
 }: WorktreeCardReviewDetailSectionProps): React.JSX.Element | null {
@@ -41,6 +46,25 @@ export function WorktreeCardReviewDetailSection({
 
   const reviewLabel = getReviewLabel(review)
   const reviewProvider = getProviderName(review)
+  const moreActionsLabel = translate(
+    'auto.components.sidebar.WorktreeCardMeta.dbe2d18972',
+    'More {{value0}} actions',
+    { value0: reviewLabel }
+  )
+  const moreActionsTrigger = (
+    <DropdownMenuTrigger asChild>
+      <Button
+        type="button"
+        variant="ghost"
+        size="icon-xs"
+        className="size-6"
+        aria-label={moreActionsLabel}
+        onClick={(event) => event.stopPropagation()}
+      >
+        <Ellipsis className="size-3" />
+      </Button>
+    </DropdownMenuTrigger>
+  )
   const dismissAndOpenReview = (event: React.MouseEvent): void => {
     closeHover()
     onOpenReviewInOrca?.(event)
@@ -57,53 +81,62 @@ export function WorktreeCardReviewDetailSection({
         )}
         actions={
           <>
-            {onUnlinkReview && (
+            {(onCopyReviewLink || onOpenReviewInBrowser || onUnlinkReview) && (
               <DropdownMenu
                 modal={false}
                 open={reviewMenuOpen}
                 onOpenChange={onReviewMenuOpenChange}
               >
-                <Tooltip open={reviewMenuOpen ? false : undefined}>
-                  <TooltipTrigger asChild>
-                    <DropdownMenuTrigger asChild>
-                      <Button
-                        type="button"
-                        variant="ghost"
-                        size="icon-xs"
-                        className="size-6"
-                        aria-label={translate(
-                          'auto.components.sidebar.WorktreeCardMeta.dbe2d18972',
-                          'More {{value0}} actions',
-                          { value0: reviewLabel }
-                        )}
-                        onClick={(event) => event.stopPropagation()}
-                      >
-                        <Ellipsis className="size-3" />
-                      </Button>
-                    </DropdownMenuTrigger>
-                  </TooltipTrigger>
-                  <TooltipContent side="top" sideOffset={4}>
-                    {translate(
-                      'auto.components.sidebar.WorktreeCardMeta.dbe2d18972',
-                      'More {{value0}} actions',
-                      { value0: reviewLabel }
-                    )}
-                  </TooltipContent>
-                </Tooltip>
-                <DropdownMenuContent align="end" className="w-40">
-                  <DropdownMenuItem
-                    onSelect={() => {
-                      closeHover()
-                      onUnlinkReview?.()
-                    }}
-                  >
-                    <Unlink className="size-3.5" />
-                    {translate(
-                      'auto.components.sidebar.WorktreeCardMeta.ae76907ca6',
-                      'Unlink {{value0}}',
-                      { value0: reviewLabel }
-                    )}
-                  </DropdownMenuItem>
+                {reviewMenuOpen ? (
+                  moreActionsTrigger
+                ) : (
+                  <Tooltip>
+                    <TooltipTrigger asChild>{moreActionsTrigger}</TooltipTrigger>
+                    <TooltipContent side="top" sideOffset={4}>
+                      {moreActionsLabel}
+                    </TooltipContent>
+                  </Tooltip>
+                )}
+                <DropdownMenuContent align="end" className="w-52">
+                  {onOpenReviewInBrowser && (
+                    <DropdownMenuItem
+                      onSelect={() => {
+                        closeHover()
+                        onOpenReviewInBrowser(review.url!)
+                      }}
+                    >
+                      <Globe className="size-3.5" />
+                      {translate(
+                        'auto.components.sidebar.WorktreeCardMeta.openInOrcaBrowser',
+                        'Open in Orca browser'
+                      )}
+                    </DropdownMenuItem>
+                  )}
+                  {onCopyReviewLink && (
+                    <DropdownMenuItem
+                      onSelect={() => {
+                        closeHover()
+                        onCopyReviewLink()
+                      }}
+                    >
+                      <Copy className="size-3.5" />
+                      {translate(
+                        'auto.components.sidebar.WorktreeCardReviewDetailSection.copyLink',
+                        'Copy link'
+                      )}
+                    </DropdownMenuItem>
+                  )}
+                  {onUnlinkReview && (
+                    <HostedReviewUnlinkMenuItem
+                      reviewLabel={reviewLabel}
+                      reviewIdentifier={`${reviewLabel === 'MR' ? '!' : '#'}${review.number}`}
+                      providerLabel={reviewProvider}
+                      onSelect={() => {
+                        closeHover()
+                        onUnlinkReview()
+                      }}
+                    />
+                  )}
                 </DropdownMenuContent>
               </DropdownMenu>
             )}

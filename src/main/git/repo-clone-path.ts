@@ -1,6 +1,6 @@
-import { isAbsolute, join, posix, relative, resolve, sep, win32 } from 'path'
-import type { Stats } from 'fs'
-import { lstat, mkdir, rm } from 'fs/promises'
+import { isAbsolute, join, posix, relative, resolve, sep, win32 } from 'node:path'
+import type { Stats } from 'node:fs'
+import { lstat, mkdir, rm } from 'node:fs/promises'
 import {
   isWindowsAbsolutePathLike,
   normalizeRuntimePathForComparison,
@@ -19,7 +19,11 @@ export function deriveCloneRepoNameFromUrl(url: string): string {
   // be "." or ".."; rejecting them prevents parent/destination deletion.
   const source = url.replace(/\.git\/?$/, '')
   const isWindowsLocalSource = /^[A-Za-z]:[\\/]/.test(source) || source.startsWith('\\\\')
-  const repoName = isWindowsLocalSource ? win32.basename(source) : posix.basename(source)
+  const scpPath =
+    !isWindowsLocalSource && !source.includes('://')
+      ? source.match(/^(?:[^@/:]+@)?(?:\[[^\]]+\]|[^:/\s]+):(.+)$/)?.[1]
+      : undefined
+  const repoName = isWindowsLocalSource ? win32.basename(source) : posix.basename(scpPath ?? source)
   if (!repoName || repoName === '.' || repoName === '..') {
     throw new Error('Invalid repository name derived from URL')
   }

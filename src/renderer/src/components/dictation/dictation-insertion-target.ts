@@ -1,9 +1,30 @@
+import { yieldToEventLoop } from '../../../../shared/event-loop-yield'
+import { getUtf8ChunkEndIndex } from '../../../../shared/utf8-byte-limits'
+import {
+  TEXT_CONTROL_PASTE_CHUNK_MAX_BYTES,
+  TEXT_CONTROL_PASTE_DIRECT_MAX_BYTES,
+  TEXT_CONTROL_PASTE_MAX_BYTES,
+  measureTextControlPasteByteLength,
+  measureTextControlPasteByteLengthWithYield,
+  pasteTextIntoTextControl
+} from '@/lib/text-control-paste'
+import { DICTATION_FOCUS_INPUT_EVENT } from './dictation-control-events'
+
 export type DictationInsertionTarget =
   | { kind: 'terminal'; tabId: string; paneId: number }
   | { kind: 'text'; element: HTMLInputElement | HTMLTextAreaElement }
   | { kind: 'contentEditable'; element: HTMLElement }
 
 export function captureInsertionTarget(): DictationInsertionTarget | null {
+  const focused = readFocusedInsertionTarget()
+  if (focused) {
+    return focused
+  }
+  document.dispatchEvent(new Event(DICTATION_FOCUS_INPUT_EVENT))
+  return readFocusedInsertionTarget()
+}
+
+function readFocusedInsertionTarget(): DictationInsertionTarget | null {
   const activeElement = document.activeElement
 
   if (!activeElement) {
@@ -47,46 +68,103 @@ export function insertText(text: string, target: DictationInsertionTarget): void
     if (!element.isConnected) {
       return
     }
-    const start = element.selectionStart ?? element.value.length
-    const end = element.selectionEnd ?? start
-    element.setRangeText(text, start, end, 'end')
-    element.dispatchEvent(new Event('input', { bubbles: true }))
+    void pasteTextIntoTextControl(element, text, {
+      source: 'programmatic',
+      inputType: 'insertText',
+      canContinue: (candidate) => candidate.ownerDocument.activeElement === candidate
+    }).catch(() => {})
     return
   }
 
   if (target.kind === 'contentEditable') {
-    const element = target.element
-    if (!element.isConnected || !element.contains(document.activeElement)) {
-      return
-    }
-    const editorElement = findClosestEditorElement(element) ?? element
-    editorElement.dispatchEvent(
-      new InputEvent('beforeinput', {
-        bubbles: true,
-        cancelable: true,
-        inputType: 'insertText',
-        data: text
-      })
-    )
-    if (!document.execCommand('insertText', false, text)) {
-      const selection = window.getSelection()
-      if (selection && selection.rangeCount > 0) {
-        const range = selection.getRangeAt(0)
-        range.deleteContents()
-        const textNode = document.createTextNode(text)
-        range.insertNode(textNode)
-        range.setStartAfter(textNode)
-        range.collapse(true)
-        selection.removeAllRanges()
-        selection.addRange(range)
-      }
-      editorElement.dispatchEvent(
-        new InputEvent('input', { bubbles: true, inputType: 'insertText', data: text })
-      )
-    }
+    void insertTextIntoContentEditableTarget(target.element, text).catch(() => {})
   }
 }
 
 function findClosestEditorElement(element: HTMLElement): HTMLElement | null {
   return element.closest('.ProseMirror, [contenteditable="true"]')
+}
+
+async function insertTextIntoContentEditableTarget(
+  element: HTMLElement,
+  text: string
+): Promise<void> {
+  const directByteLength = measureTextControlPasteByteLength(text, {
+    stopAfterBytes: TEXT_CONTROL_PASTE_DIRECT_MAX_BYTES
+  })
+  if (directByteLength.byteLength === 0) {
+    return
+  }
+  if (!isContentEditableDictationTargetCurrent(element)) {
+    return
+  }
+  const editorElement = findClosestEditorElement(element) ?? element
+  if (!directByteLength.exceededLimit) {
+    insertContentEditableDictationChunk(element, editorElement, text)
+    return
+  }
+
+  const maxByteLength = await measureTextControlPasteByteLengthWithYield(text, {
+    stopAfterBytes: TEXT_CONTROL_PASTE_MAX_BYTES
+  })
+  if (maxByteLength.exceededLimit) {
+    return
+  }
+
+  let textIndex = 0
+  // Why: dictation can produce paste-sized text; chunking avoids one large
+  // execCommand while keeping editor beforeinput/input semantics.
+  while (textIndex < text.length) {
+    if (!isContentEditableDictationTargetCurrent(element)) {
+      return
+    }
+    const nextIndex = getUtf8ChunkEndIndex(text, textIndex, TEXT_CONTROL_PASTE_CHUNK_MAX_BYTES)
+    if (
+      !insertContentEditableDictationChunk(element, editorElement, text.slice(textIndex, nextIndex))
+    ) {
+      return
+    }
+    textIndex = nextIndex
+    if (textIndex < text.length) {
+      await yieldToEventLoop()
+    }
+  }
+}
+
+function insertContentEditableDictationChunk(
+  element: HTMLElement,
+  editorElement: HTMLElement,
+  text: string
+): boolean {
+  const beforeInput = new InputEvent('beforeinput', {
+    bubbles: true,
+    cancelable: true,
+    inputType: 'insertText',
+    data: text
+  })
+  if (!editorElement.dispatchEvent(beforeInput)) {
+    return false
+  }
+  if (element.ownerDocument.execCommand?.('insertText', false, text) === true) {
+    return true
+  }
+  const selection = element.ownerDocument.getSelection()
+  if (selection && selection.rangeCount > 0) {
+    const range = selection.getRangeAt(0)
+    range.deleteContents()
+    const textNode = element.ownerDocument.createTextNode(text)
+    range.insertNode(textNode)
+    range.setStartAfter(textNode)
+    range.collapse(true)
+    selection.removeAllRanges()
+    selection.addRange(range)
+  }
+  editorElement.dispatchEvent(
+    new InputEvent('input', { bubbles: true, inputType: 'insertText', data: text })
+  )
+  return true
+}
+
+function isContentEditableDictationTargetCurrent(element: HTMLElement): boolean {
+  return element.isConnected && element.contains(element.ownerDocument.activeElement)
 }

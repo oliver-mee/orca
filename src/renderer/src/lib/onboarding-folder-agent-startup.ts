@@ -5,32 +5,42 @@ import {
   resolveTuiAgentLaunchArgs,
   resolveTuiAgentLaunchEnv
 } from '../../../shared/tui-agent-launch-defaults'
-import type { AgentStartedTelemetry } from '@/lib/worktree-activation'
-import type { GlobalSettings, OnboardingState } from '../../../shared/types'
+import type { AgentStartedTelemetry } from '@/lib/worktree-startup-payload'
+import type { StartupCommandDelivery } from '../../../shared/codex-startup-delivery'
+import type { SleepingAgentLaunchConfig } from '../../../shared/agent-session-resume'
+import type { GlobalSettings } from '../../../shared/global-settings-types'
+import type { OnboardingState } from '../../../shared/onboarding-state-types'
+import type { AgentStartupShell } from '../../../shared/tui-agent-startup-shell'
+import type { TuiAgent } from '../../../shared/tui-agent'
 
 export type OnboardingFolderAgentStartup = {
   command: string
   env?: Record<string, string>
+  launchConfig?: SleepingAgentLaunchConfig
+  launchAgent?: TuiAgent
+  startupCommandDelivery?: StartupCommandDelivery
   telemetry: AgentStartedTelemetry
 }
 
-function getClientPlatform(): NodeJS.Platform {
-  if (navigator.userAgent.includes('Windows')) {
-    return 'win32'
-  }
-  return navigator.userAgent.includes('Mac') ? 'darwin' : 'linux'
+type OnboardingStartupHost = {
+  platform: NodeJS.Platform
+  shell: AgentStartupShell | undefined
+  isRemote: boolean
+}
+
+export function onboardingFolderDefaultAgent(settings: GlobalSettings | null): TuiAgent | null {
+  const agent = settings?.defaultTuiAgent
+  return agent && agent !== 'blank' && isTuiAgentEnabled(agent, settings?.disabledTuiAgents)
+    ? agent
+    : null
 }
 
 export function buildOnboardingFolderAgentStartup(
-  settings: GlobalSettings | null
+  settings: GlobalSettings | null,
+  host: OnboardingStartupHost
 ): OnboardingFolderAgentStartup | undefined {
-  const agent = settings?.defaultTuiAgent
-  if (
-    !settings ||
-    !agent ||
-    agent === 'blank' ||
-    !isTuiAgentEnabled(agent, settings.disabledTuiAgents)
-  ) {
+  const agent = onboardingFolderDefaultAgent(settings)
+  if (!settings || !agent) {
     return undefined
   }
 
@@ -40,7 +50,7 @@ export function buildOnboardingFolderAgentStartup(
     cmdOverrides: settings.agentCmdOverrides ?? {},
     agentArgs: resolveTuiAgentLaunchArgs(agent, settings.agentDefaultArgs),
     agentEnv: resolveTuiAgentLaunchEnv(agent, settings.agentDefaultEnv),
-    platform: getClientPlatform(),
+    ...host,
     allowEmptyPromptLaunch: true
   })
   if (!startupPlan) {
@@ -50,6 +60,11 @@ export function buildOnboardingFolderAgentStartup(
   return {
     command: startupPlan.launchCommand,
     ...(startupPlan.env ? { env: startupPlan.env } : {}),
+    launchConfig: startupPlan.launchConfig,
+    launchAgent: agent,
+    ...(startupPlan.startupCommandDelivery
+      ? { startupCommandDelivery: startupPlan.startupCommandDelivery }
+      : {}),
     telemetry: {
       agent_kind: tuiAgentToAgentKind(agent),
       launch_source: 'onboarding',
@@ -73,10 +88,11 @@ export function shouldSeedFolderAgentAfterDismissedOnboarding(
 export function buildDismissedOnboardingFolderAgentStartup(
   settings: GlobalSettings | null,
   onboarding: OnboardingState | null,
-  hasExistingProject: boolean
+  hasExistingProject: boolean,
+  host: OnboardingStartupHost
 ): OnboardingFolderAgentStartup | undefined {
   if (!shouldSeedFolderAgentAfterDismissedOnboarding(onboarding, hasExistingProject)) {
     return undefined
   }
-  return buildOnboardingFolderAgentStartup(settings)
+  return buildOnboardingFolderAgentStartup(settings, host)
 }

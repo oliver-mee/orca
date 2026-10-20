@@ -1,11 +1,13 @@
-import { ipcMain, BrowserWindow, systemPreferences, app } from 'electron'
-import { join } from 'path'
-import { writeFile, unlink } from 'fs/promises'
-import { createHash } from 'crypto'
-import { SPEECH_MODEL_CATALOG, getCatalogModel } from '../speech/model-catalog'
+import { ipcMain, BrowserWindow, systemPreferences } from 'electron'
+import { join } from 'node:path'
+import { writeFile, unlink } from 'node:fs/promises'
+import { createHash } from 'node:crypto'
+import { SPEECH_MODEL_CATALOG } from '../speech/model-catalog'
+import { deleteLocalSpeechModel } from '../speech/speech-model-deletion'
 import { getSpeechModelManager, getSpeechSttService } from '../speech/speech-runtime-service'
 import {
   clearOpenAiSpeechApiKey,
+  getOpenAiSpeechApiKeyProtection,
   hasOpenAiSpeechApiKey,
   saveOpenAiSpeechApiKey
 } from '../speech/openai-api-key-store'
@@ -21,17 +23,17 @@ export function registerSpeechHandlers(store: Store): void {
   })
 
   ipcMain.handle('speech:getOpenAiApiKeyStatus', async () => {
-    return { configured: hasOpenAiSpeechApiKey() }
+    return { configured: hasOpenAiSpeechApiKey(), protection: getOpenAiSpeechApiKeyProtection() }
   })
 
   ipcMain.handle('speech:saveOpenAiApiKey', async (_event, apiKey: string) => {
     saveOpenAiSpeechApiKey(apiKey)
-    return { configured: true }
+    return { configured: true, protection: getOpenAiSpeechApiKeyProtection() }
   })
 
   ipcMain.handle('speech:clearOpenAiApiKey', async () => {
     clearOpenAiSpeechApiKey()
-    return { configured: false }
+    return { configured: false, protection: null }
   })
 
   ipcMain.handle('speech:downloadModel', async (event, modelId: string) => {
@@ -69,19 +71,25 @@ export function registerSpeechHandlers(store: Store): void {
   })
 
   ipcMain.handle('speech:deleteModel', async (_event, modelId: string) => {
-    if (!getCatalogModel(modelId)) {
-      throw new Error(`Unknown model: ${modelId}`)
-    }
-    await getSpeechModelManager(store).deleteModel(modelId)
+    await deleteLocalSpeechModel({
+      store,
+      modelManager: getSpeechModelManager(store),
+      sttService: getSpeechSttService(store),
+      modelId
+    })
   })
 
   const getHotwordsFilePath = (content: string): string => {
     const digest = createHash('sha256').update(content).digest('hex').slice(0, 12)
-    return join(app.getPath('userData'), `speech-hotwords-${digest}.txt`)
+    // Why: sherpa-onnx cannot read non-ASCII Windows paths, so co-locate the
+    // hotwords file with the ASCII-safe model cache instead of userData.
+    return join(getSpeechModelManager(store).getModelsDir(), `speech-hotwords-${digest}.txt`)
   }
 
   const getDesktopOwner = (senderId: number, sessionId: string): string =>
     `desktop:${senderId}:${sessionId}`
+
+  const dictationListeners = new Map<number, { owner: string; cleanup: () => void }>()
 
   ipcMain.handle(
     'speech:startDictation',
@@ -92,9 +100,13 @@ export function registerSpeechHandlers(store: Store): void {
       }
       let resolvedHotwordsPath: string | undefined
       let windowClosed = false
-      const owner = getDesktopOwner(event.sender.id, sessionId)
+      const senderId = event.sender.id
+      const owner = getDesktopOwner(senderId, sessionId)
+      let sessionListenerRemoved = false
+      let sessionReady = false
       const cleanupOnWindowClosed = (): void => {
         windowClosed = true
+        cleanupSessionListener()
         void getSpeechSttService(store)
           .stopDictation(owner)
           .finally(() => {
@@ -105,7 +117,11 @@ export function registerSpeechHandlers(store: Store): void {
           .catch(() => {})
       }
       const cleanupSessionListener = (): void => {
+        sessionListenerRemoved = true
         window.off('closed', cleanupOnWindowClosed)
+        if (dictationListeners.get(senderId)?.cleanup === cleanupSessionListener) {
+          dictationListeners.delete(senderId)
+        }
       }
       window.once('closed', cleanupOnWindowClosed)
 
@@ -146,6 +162,9 @@ export function registerSpeechHandlers(store: Store): void {
         await getSpeechSttService(store).startDictation(
           modelId,
           (msg) => {
+            if (msg.type === 'ready') {
+              sessionReady = true
+            }
             if (window.isDestroyed()) {
               return
             }
@@ -175,6 +194,15 @@ export function registerSpeechHandlers(store: Store): void {
           resolvedHotwordsPath,
           owner
         )
+        // Coalesced starts install no sink; only an accepted start supersedes the close hook.
+        if (sessionReady) {
+          dictationListeners.get(senderId)?.cleanup()
+          if (!sessionListenerRemoved) {
+            dictationListeners.set(senderId, { owner, cleanup: cleanupSessionListener })
+          }
+        } else {
+          cleanupSessionListener()
+        }
         if (resolvedHotwordsPath) {
           unlink(resolvedHotwordsPath).catch(() => {})
         }
@@ -203,6 +231,11 @@ export function registerSpeechHandlers(store: Store): void {
   )
 
   ipcMain.handle('speech:stopDictation', async (_event, sessionId = 'desktop') => {
-    await getSpeechSttService(store).stopDictation(getDesktopOwner(_event.sender.id, sessionId))
+    const owner = getDesktopOwner(_event.sender.id, sessionId)
+    const listener = dictationListeners.get(_event.sender.id)
+    await getSpeechSttService(store).stopDictation(owner)
+    if (listener?.owner === owner) {
+      listener.cleanup()
+    }
   })
 }

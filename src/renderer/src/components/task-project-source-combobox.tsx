@@ -4,10 +4,10 @@ import { Button } from '@/components/ui/button'
 import { Command, CommandInput, CommandList } from '@/components/ui/command'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import RepoBadgeLabel from '@/components/repo/RepoBadgeLabel'
-import { searchRepos } from '@/lib/repo-search'
+import { isRepoSearchQueryTooLarge, searchRepos } from '@/lib/repo-search'
 import { cn } from '@/lib/utils'
 import { translate } from '@/i18n/i18n'
-import type { Repo } from '../../../shared/types'
+import type { Repo } from '../../../shared/repo-types'
 import type { TaskProjectPickerGroup } from './task-page-default-repo-selection'
 import {
   getSelectedTaskProjectSource,
@@ -114,6 +114,9 @@ export default function TaskProjectSourceCombobox({
   }>({ projectKey: null, row: false, content: false })
 
   const filteredGroups = useMemo(() => {
+    if (isRepoSearchQueryTooLarge(query)) {
+      return []
+    }
     const trimmed = query.trim()
     if (!trimmed) {
       return groups

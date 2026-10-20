@@ -14,6 +14,17 @@ import {
   getAgentStatusHooksSearchKeywords,
   getAgentStatusHooksTitle
 } from './agent-status-hooks-copy'
+import {
+  getAgentWorkspaceTrustDescription,
+  getAgentWorkspaceTrustSearchKeywords,
+  getAgentWorkspaceTrustTitle
+} from './agent-workspace-trust-copy'
+import { getAgentCacheTimerSearchEntries } from './agent-cache-timer-search'
+import {
+  getCodexTerminalServerIsolationDescription,
+  getCodexTerminalServerIsolationSearchKeywords,
+  getCodexTerminalServerIsolationTitle
+} from './codex-terminal-server-isolation-copy'
 import { translate } from '@/i18n/i18n'
 import { searchKeywords, translateSearchKeyword, uniqueKeywords } from './settings-search-keywords'
 import { createLocalizedCatalog } from '@/i18n/localized-catalog'
@@ -34,6 +45,8 @@ function buildAgentSettingsKeywords(): string[] {
     { key: 'auto.components.settings.agents.search.permissions', fallback: 'permissions' },
     { key: 'auto.components.settings.agents.search.yolo', fallback: 'yolo', englishOnly: true },
     { key: 'auto.components.settings.agents.search.manual', fallback: 'manual' },
+    { key: 'settings.agents.autoPermissions', fallback: 'Auto' },
+    { key: 'settings.agents.approveForMe', fallback: 'approve for me' },
     {
       key: 'auto.components.settings.agents.search.e2b7c0dcd7',
       fallback: 'github',
@@ -58,7 +71,19 @@ function expandAgentSearchText(value: string): string[] {
   return spaced === value ? [value] : [value, spaced]
 }
 
-export const getAgentsPaneSearchEntries = createLocalizedCatalog(() => [
+type AgentsPaneSearchOptions = {
+  includeAgentAwake?: boolean
+  includeAgentRuntime?: boolean
+  includeAgentWorkspaceTrust?: boolean
+  includeCodexTerminalServerIsolation?: boolean
+}
+
+const AGENT_AWAKE_SEARCH_ENTRY_ID = 'agent-awake'
+const AGENT_WORKSPACE_TRUST_SEARCH_ENTRY_ID = 'agent-workspace-trust'
+const AGENT_RUNTIME_SEARCH_ENTRY_ID = 'agent-runtime'
+const CODEX_TERMINAL_SERVER_ISOLATION_SEARCH_ENTRY_ID = 'codex-terminal-server-isolation'
+
+const getAllAgentsPaneSearchEntries = createLocalizedCatalog(() => [
   {
     title: translate('auto.components.settings.agents.search.bb9ad95777', 'Agents'),
     description: translate(
@@ -68,19 +93,29 @@ export const getAgentsPaneSearchEntries = createLocalizedCatalog(() => [
     keywords: buildAgentSettingsKeywords()
   },
   {
-    title: translate('auto.components.settings.agents.search.ef804b7337', 'Agent Location'),
+    title: translate('auto.components.settings.agents.search.agentRuntime', 'Agent Runtime'),
+    id: AGENT_RUNTIME_SEARCH_ENTRY_ID,
     description: translate(
-      'auto.components.settings.agents.search.cbdd7f3b9e',
-      'Choose whether installed agents are detected on this device or in WSL.'
+      'auto.components.settings.agents.search.agentRuntimeDescription',
+      'Choose whether agents are detected and launched on Windows or in WSL by default.'
     ),
     keywords: [
       ...translateSearchKeyword('auto.components.settings.agents.search.96ba2373b6', 'agent'),
+      ...translateSearchKeyword('auto.components.settings.agents.search.runtime', 'runtime'),
       ...translateSearchKeyword('auto.components.settings.agents.search.d2952dfd74', 'location'),
+      ...translateSearchKeyword(
+        'auto.components.settings.agents.search.agentLocation',
+        'agent location'
+      ),
       ...translateSearchKeyword('auto.components.settings.agents.search.77c02fa3c3', 'windows'),
       ...translateSearchKeyword('auto.components.settings.agents.search.d608654c03', 'wsl'),
       ...translateSearchKeyword('auto.components.settings.agents.search.f622b8eb2a', 'linux'),
       ...translateSearchKeyword('auto.components.settings.agents.search.839e82c81f', 'detect'),
       ...translateSearchKeyword('auto.components.settings.agents.search.2814401339', 'installed'),
+      ...translateSearchKeyword(
+        'auto.components.settings.agents.search.installedAgentsWsl',
+        'installed agents in wsl'
+      ),
       ...translateSearchKeyword('auto.components.settings.agents.search.719f53350c', 'path')
     ]
   },
@@ -90,12 +125,25 @@ export const getAgentsPaneSearchEntries = createLocalizedCatalog(() => [
     keywords: getAgentStatusHooksSearchKeywords()
   },
   {
+    title: getAgentWorkspaceTrustTitle(),
+    id: AGENT_WORKSPACE_TRUST_SEARCH_ENTRY_ID,
+    description: getAgentWorkspaceTrustDescription(),
+    keywords: getAgentWorkspaceTrustSearchKeywords()
+  },
+  {
+    title: getCodexTerminalServerIsolationTitle(),
+    id: CODEX_TERMINAL_SERVER_ISOLATION_SEARCH_ENTRY_ID,
+    description: getCodexTerminalServerIsolationDescription(),
+    keywords: getCodexTerminalServerIsolationSearchKeywords()
+  },
+  {
     title: getAgentGeneratedTabTitlesTitle(),
     description: getAgentGeneratedTabTitlesDescription(),
     keywords: getAgentGeneratedTabTitlesSearchKeywords()
   },
   {
     title: getAgentAwakeTitle(),
+    id: AGENT_AWAKE_SEARCH_ENTRY_ID,
     description: getAgentAwakeDescription(),
     keywords: getAgentAwakeSearchKeywords()
   },
@@ -105,8 +153,8 @@ export const getAgentsPaneSearchEntries = createLocalizedCatalog(() => [
       'Agent Permissions'
     ),
     description: translate(
-      'auto.components.settings.agents.search.agentPermissionsDescription',
-      'Switch agent permission defaults between Yolo and Manual.'
+      'settings.agents.permissionsSearchDescription',
+      'Launch agents with Manual, Auto, or Yolo permissions.'
     ),
     keywords: [
       ...translateSearchKeyword('auto.components.settings.agents.search.permission', 'permission'),
@@ -116,8 +164,34 @@ export const getAgentsPaneSearchEntries = createLocalizedCatalog(() => [
       ),
       ...translateSearchKeyword('auto.components.settings.agents.search.yolo', 'yolo'),
       ...translateSearchKeyword('auto.components.settings.agents.search.manual', 'manual'),
+      ...translateSearchKeyword('settings.agents.autoPermissions', 'Auto'),
       ...translateSearchKeyword('auto.components.settings.agents.search.skip', 'skip'),
       ...translateSearchKeyword('auto.components.settings.agents.search.checks', 'checks')
     ]
-  }
+  },
+  ...getAgentCacheTimerSearchEntries()
 ])
+
+export function getAgentsPaneSearchEntries({
+  includeAgentAwake = true,
+  includeAgentRuntime = true,
+  includeAgentWorkspaceTrust = true,
+  includeCodexTerminalServerIsolation = true
+}: AgentsPaneSearchOptions = {}) {
+  const hiddenIds = new Set<string>()
+  if (!includeAgentAwake) {
+    hiddenIds.add(AGENT_AWAKE_SEARCH_ENTRY_ID)
+  }
+  if (!includeAgentRuntime) {
+    hiddenIds.add(AGENT_RUNTIME_SEARCH_ENTRY_ID)
+  }
+  if (!includeAgentWorkspaceTrust) {
+    hiddenIds.add(AGENT_WORKSPACE_TRUST_SEARCH_ENTRY_ID)
+  }
+  if (!includeCodexTerminalServerIsolation) {
+    hiddenIds.add(CODEX_TERMINAL_SERVER_ISOLATION_SEARCH_ENTRY_ID)
+  }
+  return getAllAgentsPaneSearchEntries().filter(
+    (entry) => !('id' in entry) || !hiddenIds.has(entry.id)
+  )
+}

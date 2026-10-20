@@ -1,4 +1,6 @@
-import type { GitHubAssignableUser, GitHubWorkItem } from '../../../shared/types'
+import type { GitHubAssignableUser } from '../../../shared/github/pull-request-types'
+import type { GitHubWorkItem } from '../../../shared/github/work-item-types'
+import { isClipboardTextByteLengthOverLimit } from '../../../shared/clipboard-text'
 
 type ReviewDisplayItem = Pick<GitHubWorkItem, 'reviewDecision' | 'reviewRequests' | 'latestReviews'>
 export type GitHubPRPrimaryReviewer = Pick<GitHubAssignableUser, 'login' | 'avatarUrl'> & {
@@ -7,6 +9,7 @@ export type GitHubPRPrimaryReviewer = Pick<GitHubAssignableUser, 'login' | 'avat
 export type GitHubPRReviewerRow = GitHubPRPrimaryReviewer & {
   stateLabel: string
 }
+export const GITHUB_PR_REVIEWER_INPUT_MAX_BYTES = 2 * 1024
 
 function uniqueLogins(logins: readonly (string | null | undefined)[]): string[] {
   const seen = new Set<string>()
@@ -32,6 +35,51 @@ export function normalizeGitHubReviewerLogins(
 ): string[] {
   return uniqueLogins(logins.map((login) => login.trim().replace(/^@/, ''))).filter(
     (login) => !excludedLogins.has(login.toLowerCase())
+  )
+}
+
+// Why: pasted reviewer lists share the request-review hot path; reject oversized
+// text before tokenizing and avoid regex splitting accepted multiline input.
+export function parseGitHubReviewerInputLogins(
+  input: string,
+  maxBytes = GITHUB_PR_REVIEWER_INPUT_MAX_BYTES
+): string[] {
+  if (isClipboardTextByteLengthOverLimit(input, maxBytes)) {
+    return []
+  }
+
+  const logins: string[] = []
+  let tokenStart = -1
+  for (let index = 0; index <= input.length; index += 1) {
+    const isEnd = index === input.length
+    if (!isEnd && !isGitHubReviewerInputSeparator(input.charCodeAt(index))) {
+      if (tokenStart === -1) {
+        tokenStart = index
+      }
+      continue
+    }
+    if (tokenStart !== -1) {
+      logins.push(input.slice(tokenStart, index))
+      tokenStart = -1
+    }
+  }
+  return logins
+}
+
+function isGitHubReviewerInputSeparator(code: number): boolean {
+  return (
+    code === 44 ||
+    code === 32 ||
+    (code >= 9 && code <= 13) ||
+    code === 160 ||
+    code === 5760 ||
+    (code >= 8192 && code <= 8202) ||
+    code === 8232 ||
+    code === 8233 ||
+    code === 8239 ||
+    code === 8287 ||
+    code === 12288 ||
+    code === 65279
   )
 }
 
@@ -137,30 +185,6 @@ export function getGitHubPRReviewerRows(item: ReviewDisplayItem): GitHubPRReview
       avatarUrl: review.avatarUrl ?? '',
       stateLabel: formatReviewState(review.state)
     })
-  }
-  return Array.from(byLogin.values())
-}
-
-export function appendGitHubPRRequestedReviewers(
-  current: readonly GitHubAssignableUser[],
-  logins: readonly string[]
-): GitHubAssignableUser[] {
-  const byLogin = new Map<string, GitHubAssignableUser>()
-  for (const user of current) {
-    const login = user.login.trim()
-    if (login) {
-      byLogin.set(login.toLowerCase(), user)
-    }
-  }
-  for (const rawLogin of logins) {
-    const login = rawLogin.trim().replace(/^@/, '')
-    if (!login) {
-      continue
-    }
-    const key = login.toLowerCase()
-    if (!byLogin.has(key)) {
-      byLogin.set(key, { login, name: null, avatarUrl: '' })
-    }
   }
   return Array.from(byLogin.values())
 }

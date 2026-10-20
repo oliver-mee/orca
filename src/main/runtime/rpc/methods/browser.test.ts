@@ -1,16 +1,112 @@
+import '../unused-default-rpc-methods.test-fixture'
 import { describe, expect, it, vi } from 'vitest'
 import { RpcDispatcher } from '../dispatcher'
 import type { RpcRequest } from '../core'
 import type { OrcaRuntimeService } from '../../orca-runtime'
+import { setRuntimeBrowserCommandsFactory } from '../../runtime-browser-commands-factory'
+import {
+  CLIPBOARD_TEXT_MEASURE_YIELD_CODE_UNITS,
+  CLIPBOARD_TEXT_WRITE_MAX_BYTES,
+  CLIPBOARD_TEXT_WRITE_TOO_LARGE_ERROR
+} from '../../../../shared/clipboard-text'
 import { BROWSER_CORE_METHODS } from './browser-core'
 import { BROWSER_EXTRA_METHODS } from './browser-extras'
 import { BROWSER_SCREENCAST_METHODS } from './browser-screencast'
+import {
+  ClipboardWrite,
+  Fill,
+  KeyboardInsert,
+  Type
+} from '../../../../shared/rpc-contract/browser-params'
+import { ProfileCreate } from '../../../../shared/rpc-contract/browser-identity-params'
 
 function makeRequest(method: string, params?: unknown): RpcRequest {
   return { id: 'req-1', authToken: 'tok', method, params }
 }
 
 describe('browser RPC methods', () => {
+  it('passes authenticated caller identity to client page creation outside the payload', async () => {
+    const runtime = {
+      getRuntimeId: () => 'test-runtime',
+      browserTabCreate: vi.fn().mockResolvedValue({ browserPageId: 'page-1' })
+    } as unknown as OrcaRuntimeService
+    const dispatcher = new RpcDispatcher({ runtime, methods: BROWSER_CORE_METHODS })
+    const replies: string[] = []
+    const params = {
+      worktree: 'id:wt-1',
+      placement: { kind: 'client', browserHostClientId: 'host-a' }
+    }
+
+    await dispatcher.dispatchStreaming(
+      makeRequest('browser.tabCreate', params),
+      (reply) => {
+        replies.push(reply)
+      },
+      {
+        clientKind: 'runtime',
+        pairedDeviceId: 'device-a'
+      }
+    )
+
+    expect(JSON.parse(replies[0]!)).toMatchObject({ ok: true })
+    expect(runtime.browserTabCreate).toHaveBeenCalledWith(params, {
+      pairedDeviceId: 'device-a',
+      clientKind: 'runtime'
+    })
+  })
+
+  it('routes host browser-open requests through the dedicated client opener', async () => {
+    const runtime = {
+      getRuntimeId: () => 'test-runtime',
+      browserOpenUrlOnClient: vi.fn().mockResolvedValue({ browserPageId: 'page-local' })
+    } as unknown as OrcaRuntimeService
+    const dispatcher = new RpcDispatcher({ runtime, methods: BROWSER_CORE_METHODS })
+
+    await dispatcher.dispatch(
+      makeRequest('browser.openUrl', {
+        url: 'https://example.com/login',
+        worktree: 'id:wt-1'
+      })
+    )
+
+    expect(runtime.browserOpenUrlOnClient).toHaveBeenCalledWith({
+      url: 'https://example.com/login',
+      worktree: 'id:wt-1'
+    })
+  })
+
+  it('rejects the retired profile user-agent field with changed-semantics guidance', () => {
+    expect(() =>
+      ProfileCreate.parse({ label: 'Google', scope: 'isolated', userAgentMode: 'native' })
+    ).toThrow('browser_profile_user_agent_mode_is_now_app_wide')
+  })
+
+  // The schema check above proves the shape; this proves an older client actually gets the
+  // rejection over the wire instead of a success with the field quietly dropped.
+  it('rejects the retired profile user-agent field through the dispatcher', async () => {
+    const browserProfileCreate = vi.fn().mockResolvedValue({ id: 'profile-1' })
+    // oxlint-disable-next-line typescript/consistent-type-assertions -- SAFETY: the dispatcher reads only getRuntimeId and the single browser method stubbed here.
+    const runtime = {
+      getRuntimeId: () => 'test-runtime',
+      browserProfileCreate
+    } as unknown as OrcaRuntimeService
+    const dispatcher = new RpcDispatcher({ runtime, methods: BROWSER_CORE_METHODS })
+
+    const response = await dispatcher.dispatch(
+      makeRequest('browser.profileCreate', {
+        label: 'Google',
+        scope: 'isolated',
+        userAgentMode: 'native'
+      })
+    )
+
+    // Why a working runtime stub: if the field were accepted and stripped again the call would
+    // succeed, so every assertion below is load-bearing rather than passing on a missing method.
+    expect(response).toMatchObject({ ok: false })
+    expect(JSON.stringify(response)).toContain('browser_profile_user_agent_mode_is_now_app_wide')
+    expect(browserProfileCreate).not.toHaveBeenCalled()
+  })
+
   it('routes core browser automation commands to the runtime server', async () => {
     const runtime = {
       getRuntimeId: () => 'test-runtime',
@@ -50,7 +146,8 @@ describe('browser RPC methods', () => {
       makeRequest('browser.profileImportFromBrowser', {
         profileId: 'profile-1',
         browserFamily: 'chrome',
-        browserProfile: 'Default'
+        browserProfile: 'Default',
+        supportsPartitionSkippedCookies: true
       })
     )
 
@@ -60,11 +157,14 @@ describe('browser RPC methods', () => {
       page: 'page-1',
       url: 'https://example.com'
     })
-    expect(runtime.browserTabCreate).toHaveBeenCalledWith({
-      worktree: 'id:wt-1',
-      url: 'https://example.com',
-      profileId: 'profile-1'
-    })
+    expect(runtime.browserTabCreate).toHaveBeenCalledWith(
+      {
+        worktree: 'id:wt-1',
+        url: 'https://example.com',
+        profileId: 'profile-1'
+      },
+      { clientKind: undefined }
+    )
     expect(runtime.browserTabSwitch).toHaveBeenCalledWith({
       worktree: 'id:wt-1',
       index: 0,
@@ -74,7 +174,8 @@ describe('browser RPC methods', () => {
     expect(runtime.browserProfileImportFromBrowser).toHaveBeenCalledWith({
       profileId: 'profile-1',
       browserFamily: 'chrome',
-      browserProfile: 'Default'
+      browserProfile: 'Default',
+      supportsPartitionSkippedCookies: true
     })
   })
 
@@ -135,6 +236,32 @@ describe('browser RPC methods', () => {
       cleanupSubscription: vi.fn()
     } as unknown as OrcaRuntimeService
     const dispatcher = new RpcDispatcher({ runtime, methods: BROWSER_SCREENCAST_METHODS })
+    setRuntimeBrowserCommandsFactory(() => ({}) as never)
+
+    try {
+      const response = await dispatcher.dispatch(
+        makeRequest('browser.screencast.unsubscribe', {
+          subscriptionId: 'browser-screencast:page-1:test'
+        })
+      )
+
+      expect(runtime.cleanupSubscription).toHaveBeenCalledWith('browser-screencast:page-1:test')
+      expect(response).toMatchObject({
+        ok: true,
+        result: { unsubscribed: true }
+      })
+    } finally {
+      setRuntimeBrowserCommandsFactory(null)
+    }
+  })
+
+  it('rejects browser screencast unsubscribe when no provider resolved', async () => {
+    setRuntimeBrowserCommandsFactory(null)
+    const runtime = {
+      getRuntimeId: () => 'test-runtime',
+      cleanupSubscription: vi.fn()
+    } as unknown as OrcaRuntimeService
+    const dispatcher = new RpcDispatcher({ runtime, methods: BROWSER_SCREENCAST_METHODS })
 
     const response = await dispatcher.dispatch(
       makeRequest('browser.screencast.unsubscribe', {
@@ -142,11 +269,11 @@ describe('browser RPC methods', () => {
       })
     )
 
-    expect(runtime.cleanupSubscription).toHaveBeenCalledWith('browser-screencast:page-1:test')
     expect(response).toMatchObject({
-      ok: true,
-      result: { unsubscribed: true }
+      ok: false,
+      error: { code: 'browser_unavailable' }
     })
+    expect(runtime.cleanupSubscription).not.toHaveBeenCalled()
   })
 
   it('routes browser session and environment controls to the runtime server', async () => {
@@ -234,5 +361,116 @@ describe('browser RPC methods', () => {
       error: { code: 'invalid_argument' }
     })
     expect(runtime.browserCheck).not.toHaveBeenCalled()
+  })
+
+  it('rejects oversized browser clipboard writes before runtime dispatch', async () => {
+    const secret = 'browser-secret-token'
+    const runtime = {
+      getRuntimeId: () => 'test-runtime',
+      browserClipboardWrite: vi.fn().mockResolvedValue({ ok: true })
+    } as unknown as OrcaRuntimeService
+    const dispatcher = new RpcDispatcher({ runtime, methods: BROWSER_EXTRA_METHODS })
+
+    const response = await dispatcher.dispatch(
+      makeRequest('browser.clipboardWrite', {
+        page: 'page-1',
+        text: secret + 'x'.repeat(CLIPBOARD_TEXT_WRITE_MAX_BYTES + 1)
+      })
+    )
+
+    expect(response).toMatchObject({
+      ok: false,
+      error: {
+        code: 'invalid_argument',
+        message: CLIPBOARD_TEXT_WRITE_TOO_LARGE_ERROR
+      }
+    })
+    expect(JSON.stringify(response)).not.toContain(secret)
+    expect(runtime.browserClipboardWrite).not.toHaveBeenCalled()
+  })
+
+  it('leaves browser text byte limits to async handlers', () => {
+    const text = 'x'.repeat(CLIPBOARD_TEXT_WRITE_MAX_BYTES + 1)
+
+    expect(Fill.safeParse({ element: '@e1', value: text }).success).toBe(true)
+    expect(Type.safeParse({ input: text }).success).toBe(true)
+    expect(KeyboardInsert.safeParse({ text }).success).toBe(true)
+    expect(ClipboardWrite.safeParse({ text }).success).toBe(true)
+  })
+
+  it('yields while validating large accepted browser text insertion before dispatch', async () => {
+    vi.useFakeTimers()
+    try {
+      const text = 'é'.repeat(CLIPBOARD_TEXT_MEASURE_YIELD_CODE_UNITS + 1)
+      const runtime = {
+        getRuntimeId: () => 'test-runtime',
+        browserType: vi.fn().mockResolvedValue({ typed: true })
+      } as unknown as OrcaRuntimeService
+      const dispatcher = new RpcDispatcher({ runtime, methods: BROWSER_CORE_METHODS })
+
+      const responsePromise = dispatcher.dispatch(makeRequest('browser.type', { input: text }))
+      await Promise.resolve()
+
+      expect(runtime.browserType).not.toHaveBeenCalled()
+
+      await vi.runOnlyPendingTimersAsync()
+      const response = await responsePromise
+
+      expect(response).toMatchObject({
+        ok: true,
+        result: { typed: true }
+      })
+      expect(runtime.browserType).toHaveBeenCalledWith({ input: text })
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('rejects oversized browser text insertion before runtime dispatch', async () => {
+    const secret = 'browser-insert-secret'
+    const runtime = {
+      getRuntimeId: () => 'test-runtime',
+      browserFill: vi.fn().mockResolvedValue({ filled: '@e1' }),
+      browserType: vi.fn().mockResolvedValue({ typed: true }),
+      browserKeyboardInsertText: vi.fn().mockResolvedValue({ inserted: true })
+    } as unknown as OrcaRuntimeService
+    const dispatcher = new RpcDispatcher({ runtime, methods: BROWSER_CORE_METHODS })
+    const text = [secret, 'x'.repeat(CLIPBOARD_TEXT_WRITE_MAX_BYTES + 1)].join('')
+
+    const fillResponse = await dispatcher.dispatch(
+      makeRequest('browser.fill', { element: '@e1', value: text })
+    )
+    const typeResponse = await dispatcher.dispatch(makeRequest('browser.type', { input: text }))
+    const keyboardInsertResponse = await dispatcher.dispatch(
+      makeRequest('browser.keyboardInsertText', { text })
+    )
+
+    expect(fillResponse).toMatchObject({
+      ok: false,
+      error: {
+        code: 'invalid_argument',
+        message: CLIPBOARD_TEXT_WRITE_TOO_LARGE_ERROR
+      }
+    })
+    expect(typeResponse).toMatchObject({
+      ok: false,
+      error: {
+        code: 'invalid_argument',
+        message: CLIPBOARD_TEXT_WRITE_TOO_LARGE_ERROR
+      }
+    })
+    expect(keyboardInsertResponse).toMatchObject({
+      ok: false,
+      error: {
+        code: 'invalid_argument',
+        message: CLIPBOARD_TEXT_WRITE_TOO_LARGE_ERROR
+      }
+    })
+    expect(JSON.stringify([fillResponse, typeResponse, keyboardInsertResponse])).not.toContain(
+      secret
+    )
+    expect(runtime.browserFill).not.toHaveBeenCalled()
+    expect(runtime.browserType).not.toHaveBeenCalled()
+    expect(runtime.browserKeyboardInsertText).not.toHaveBeenCalled()
   })
 })

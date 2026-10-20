@@ -5,16 +5,22 @@
 // worktree identity so meta, tabs, and the live PTY session carry over. It is
 // best-effort and local-only — remote/Windows/locked/dest-taken all degrade to
 // "folder kept" without disturbing the rename that already succeeded.
-import type { GlobalSettings, Repo } from '../../shared/types'
-import { getRepoIdFromWorktreeId, splitWorktreeId } from '../../shared/worktree-id'
+import type { Repo } from '../../shared/repo-types'
+import {
+  FOLDER_WORKSPACE_INSTANCE_SEPARATOR,
+  getRepoIdFromWorktreeId,
+  splitWorktreeIdForFilesystem
+} from '../../shared/worktree/id'
 import { getRepoExecutionHostId, LOCAL_EXECUTION_HOST_ID } from '../../shared/execution-host'
 import { planWorktreeFolderRename } from '../ipc/worktree-folder-rename-target'
+import { hostWorktreeTargetForRepo } from '../persistence/host-qualified-worktree-meta'
+import type { HostWorktreeTarget } from '../../shared/worktree/host-qualified-identity'
 
 export type FirstWorkFolderRenameDeps = {
   getRepo: (repoId: string) => Repo | undefined
-  getSettings: () => GlobalSettings
+  getSettings: () => Parameters<typeof planWorktreeFolderRename>[0]['settings']
   /** Re-key all worktreeId-keyed state from the old (path-derived) id to the new. */
-  migrateWorktreeIdentity: (oldWorktreeId: string, newWorktreeId: string) => void
+  migrateWorktreeIdentity: (target: HostWorktreeTarget, newWorktreeId: string) => void
   /** Invalidate caches + tell the renderer the worktree's id changed (old->new) so
    *  it re-keys its state instead of treating the rename as a deletion. */
   notifyWorktreeRenamed: (repoId: string, oldWorktreeId: string, newWorktreeId: string) => void
@@ -35,7 +41,10 @@ export async function renameWorktreeFolderOnFirstWork(
   deps: FirstWorkFolderRenameDeps
 ): Promise<boolean> {
   const repo = deps.getRepo(getRepoIdFromWorktreeId(worktreeId))
-  const parsed = splitWorktreeId(worktreeId)
+  // Why: oldWorktreePath feeds an on-disk folder move. Resolve the synthetic
+  // `::workspace:<uuid>` suffix to the backing folder; identity is migrated
+  // separately via the untouched worktreeId.
+  const parsed = splitWorktreeIdForFilesystem(worktreeId)
   if (!repo || !parsed) {
     return false
   }
@@ -43,6 +52,9 @@ export async function renameWorktreeFolderOnFirstWork(
     repoId: repo.id,
     repoPath: repo.path,
     oldWorktreePath: parsed.worktreePath,
+    worktreeIdSuffix: worktreeId.includes(FOLDER_WORKSPACE_INSTANCE_SEPARATOR)
+      ? `${FOLDER_WORKSPACE_INSTANCE_SEPARATOR}${worktreeId.split(FOLDER_WORKSPACE_INSTANCE_SEPARATOR).at(-1)}`
+      : undefined,
     newLeaf,
     settings: deps.getSettings(),
     platform: process.platform,
@@ -57,7 +69,7 @@ export async function renameWorktreeFolderOnFirstWork(
   await deps.moveWorktree(repo.path, plan.oldPath, plan.newPath)
   // Order: move first (point of no return), then re-key identity synchronously so
   // nothing interleaves before the worktree's state is re-bound to the new id.
-  deps.migrateWorktreeIdentity(worktreeId, plan.newWorktreeId)
+  deps.migrateWorktreeIdentity(hostWorktreeTargetForRepo(worktreeId, repo), plan.newWorktreeId)
   deps.notifyWorktreeRenamed(repo.id, worktreeId, plan.newWorktreeId)
   return true
 }

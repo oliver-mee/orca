@@ -6,17 +6,19 @@ export function DeleteWorktreeDialogDescription({
   targetLabel,
   canDeleteAllLineage,
   childTargetLabel,
-  descriptionSuffix
+  descriptionSuffix,
+  showChangeLossWarning
 }: {
   targetClassName: string
   targetLabel: string | undefined
   canDeleteAllLineage: boolean
   childTargetLabel: string
   descriptionSuffix: string
+  showChangeLossWarning?: boolean
 }): React.JSX.Element {
   return (
     <DialogDescription className="text-xs">
-      {translate('auto.components.sidebar.DeleteWorktreeDialog.91492c9ad6', 'Remove')}
+      {translate('auto.components.sidebar.DeleteWorktreeDialog.91492c9ad6', 'Remove')}{' '}
       <span className={targetClassName}>{targetLabel}</span>
       {canDeleteAllLineage ? (
         <>
@@ -27,6 +29,14 @@ export function DeleteWorktreeDialogDescription({
         </>
       ) : (
         <> {descriptionSuffix}</>
+      )}
+      {showChangeLossWarning && (
+        <span className="mt-1 block">
+          {translate(
+            'components.workspace.delete.changes.permanentLoss',
+            'Any uncommitted or untracked changes in Git workspaces will be permanently deleted.'
+          )}
+        </span>
       )}
     </DialogDescription>
   )

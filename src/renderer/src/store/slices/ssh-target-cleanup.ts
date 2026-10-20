@@ -1,18 +1,9 @@
 import type { AppState } from '../types'
-import type { SshConnectionState, SshTarget } from '../../../../shared/ssh-types'
+import type { SshTarget, SshTargetSummary } from '../../../../shared/ssh-types'
 import { parseAppSshPtyId } from '../../../../shared/ssh-pty-id'
-
-export function sshConnectionStatesEqual(
-  a: SshConnectionState | undefined,
-  b: SshConnectionState
-): boolean {
-  return (
-    a?.targetId === b.targetId &&
-    a?.status === b.status &&
-    a?.error === b.error &&
-    a?.reconnectAttempt === b.reconnectAttempt
-  )
-}
+import { sanitizeSshTargetGeneration } from '../../../../shared/ssh-target-generation'
+import { resolveDirectSshTargetWorktreeIds } from '../../lib/direct-ssh-target-scope'
+import { unbindTerminalTabPtys } from './tabs/worktree-layout-lifecycle'
 
 export function sshTargetLabelsEqual(
   labels: Map<string, string>,
@@ -24,16 +15,48 @@ export function sshTargetLabelsEqual(
   return targets.every((target) => labels.get(target.id) === target.label)
 }
 
-function collectSshTargetTerminalTabIds(state: AppState, targetId: string): Set<string> {
-  const repoIds = new Set(
-    state.repos.filter((repo) => repo.connectionId === targetId).map((repo) => repo.id)
-  )
-  const tabIds = new Set<string>()
-  for (const [repoId, worktrees] of Object.entries(state.worktreesByRepo)) {
-    if (!repoIds.has(repoId)) {
-      continue
+/**
+ * Registration generations by target ID, dropping any the sanitizer rejects.
+ *
+ * An absent generation is left absent rather than defaulted: only a generation
+ * makes a target fenceable, and a guessed one would fence an automation against
+ * a registration that never existed.
+ */
+export function collectSshTargetGenerations(targets: SshTargetSummary[]): Map<string, number> {
+  const generations = new Map<string, number>()
+  for (const target of targets) {
+    const generation = sanitizeSshTargetGeneration(target.generation)
+    if (generation !== undefined) {
+      generations.set(target.id, generation)
     }
+  }
+  return generations
+}
+
+export function sshTargetGenerationsEqual(
+  current: Map<string, number>,
+  next: Map<string, number>
+): boolean {
+  return (
+    current.size === next.size &&
+    [...next].every(([targetId, generation]) => current.get(targetId) === generation)
+  )
+}
+
+function collectSshTargetTerminalTabIds(state: AppState, targetId: string): Set<string> {
+  const targetWorktreeIds = resolveDirectSshTargetWorktreeIds({
+    targetId,
+    repos: state.repos,
+    worktreesByRepo: state.worktreesByRepo,
+    detectedWorktreesByRepo: state.detectedWorktreesByRepo,
+    restoredRuntimeHostIdByWorkspaceSessionKey: state.restoredRuntimeHostIdByWorkspaceSessionKey
+  })
+  const tabIds = new Set<string>()
+  for (const worktrees of Object.values(state.worktreesByRepo)) {
     for (const worktree of worktrees) {
+      if (!targetWorktreeIds.has(worktree.id)) {
+        continue
+      }
       for (const tab of state.tabsByWorktree[worktree.id] ?? []) {
         tabIds.add(tab.id)
       }
@@ -46,13 +69,57 @@ function isSshTargetSessionId(sessionId: string, targetId: string): boolean {
   return parseAppSshPtyId(sessionId)?.connectionId === targetId
 }
 
-function shouldRemoveDeferredSshSession(
+// Why: a per-tab session map entry belongs to the removed target if the tab is
+// one of the target's, or the session id is an SSH pty id scoped to it. Shared
+// by the deferred-session and pending-reconnect cleanups so both drop the same
+// dead entries (an uncleared entry would keep a dead tab alive in the orphan
+// sweep, which now reads these maps as liveness — #9911).
+function isRemovedSshTargetTabSession(
   tabId: string,
   sessionId: string,
   targetId: string,
   targetTabIds: Set<string>
 ): boolean {
   return targetTabIds.has(tabId) || isSshTargetSessionId(sessionId, targetId)
+}
+
+// Why: each returns undefined when nothing was removed, so the patch only carries changed fields.
+function filterRecordIfChanged<T>(
+  record: Record<string, T>,
+  keep: (key: string, value: T) => boolean
+): Record<string, T> | undefined {
+  const entries = Object.entries(record)
+  const kept = entries.filter(([key, value]) => keep(key, value))
+  return kept.length === entries.length ? undefined : Object.fromEntries(kept)
+}
+
+function omitKey<T>(record: Record<string, T>, key: string): Record<string, T> | undefined {
+  if (!Object.hasOwn(record, key)) {
+    return undefined
+  }
+  const { [key]: _removed, ...next } = record
+  return next
+}
+
+function withoutMapKey<V>(map: Map<string, V>, key: string): Map<string, V> | undefined {
+  const next = new Map(map)
+  return next.delete(key) ? next : undefined
+}
+
+function filterIfChanged<T>(items: T[], keep: (item: T) => boolean): T[] | undefined {
+  const next = items.filter(keep)
+  return next.length === items.length ? undefined : next
+}
+
+function omitRemovedSshTargetTabSessions(
+  sessions: Record<string, string>,
+  targetId: string,
+  targetTabIds: Set<string>
+): Record<string, string> | undefined {
+  return filterRecordIfChanged(
+    sessions,
+    (tabId, sessionId) => !isRemovedSshTargetTabSession(tabId, sessionId, targetId, targetTabIds)
+  )
 }
 
 function clearSshTargetTabPtyState(
@@ -64,19 +131,20 @@ function clearSshTargetTabPtyState(
   | 'tabsByWorktree'
   | 'ptyIdsByTabId'
   | 'lastKnownRelayPtyIdByTabId'
-  | 'pendingCodexPaneRestartIds'
+  | 'pendingPaneAccountRestarts'
   | 'codexRestartNoticeByPtyId'
 > & { changed: boolean } {
-  let nextTabsByWorktree = state.tabsByWorktree
-  const nextPtyIdsByTabId = { ...state.ptyIdsByTabId }
-  const nextLastKnownRelayPtyIdByTabId = { ...state.lastKnownRelayPtyIdByTabId }
-  const nextPendingCodexPaneRestartIds = { ...state.pendingCodexPaneRestartIds }
+  const unboundTabIds = new Set<string>()
+  const nextLastKnownRelayPtyIdByTabId = {
+    ...state.lastKnownRelayPtyIdByTabId
+  }
+  const nextPendingPaneAccountRestarts = {
+    ...state.pendingPaneAccountRestarts
+  }
   const nextCodexRestartNoticeByPtyId = { ...state.codexRestartNoticeByPtyId }
-  let changed = false
 
-  for (const [worktreeId, tabs] of Object.entries(state.tabsByWorktree)) {
-    let nextTabs = tabs
-    for (const [index, tab] of tabs.entries()) {
+  for (const tabs of Object.values(state.tabsByWorktree)) {
+    for (const tab of tabs) {
       const lastKnownPtyId = state.lastKnownRelayPtyIdByTabId[tab.id]
       const ptyIds = [
         ...new Set([
@@ -93,31 +161,20 @@ function clearSshTargetTabPtyState(
       if (!tab.ptyId && ptyIds.length === 0 && nextLastKnownRelayPtyIdByTabId[tab.id] == null) {
         continue
       }
-      changed = true
-      if (nextTabs === tabs) {
-        nextTabs = [...tabs]
-      }
-      const { pendingActivationSpawn: _pendingActivationSpawn, ...tabWithoutActivationSpawn } = tab
-      void _pendingActivationSpawn
-      nextTabs[index] = { ...tabWithoutActivationSpawn, ptyId: null }
-      nextPtyIdsByTabId[tab.id] = []
+      unboundTabIds.add(tab.id)
       delete nextLastKnownRelayPtyIdByTabId[tab.id]
       for (const ptyId of ptyIds) {
-        delete nextPendingCodexPaneRestartIds[ptyId]
+        delete nextPendingPaneAccountRestarts[ptyId]
         delete nextCodexRestartNoticeByPtyId[ptyId]
       }
-    }
-    if (nextTabs !== tabs) {
-      nextTabsByWorktree = { ...nextTabsByWorktree, [worktreeId]: nextTabs }
     }
   }
 
   return {
-    changed,
-    tabsByWorktree: nextTabsByWorktree,
-    ptyIdsByTabId: nextPtyIdsByTabId,
+    changed: unboundTabIds.size > 0,
+    ...unbindTerminalTabPtys(state, unboundTabIds),
     lastKnownRelayPtyIdByTabId: nextLastKnownRelayPtyIdByTabId,
-    pendingCodexPaneRestartIds: nextPendingCodexPaneRestartIds,
+    pendingPaneAccountRestarts: nextPendingPaneAccountRestarts,
     codexRestartNoticeByPtyId: nextCodexRestartNoticeByPtyId
   }
 }
@@ -127,79 +184,46 @@ export function buildRemovedSshTargetCleanupPatch(
   targetId: string
 ): Partial<AppState> | null {
   const targetTabIds = collectSshTargetTerminalTabIds(state, targetId)
-  const tabPtyState = clearSshTargetTabPtyState(state, targetId, targetTabIds)
-  const nextDeferredSessions: Record<string, string> = {}
-  let removedDeferredSession = false
-  for (const [tabId, sessionId] of Object.entries(state.deferredSshSessionIdsByTabId)) {
-    if (shouldRemoveDeferredSshSession(tabId, sessionId, targetId, targetTabIds)) {
-      removedDeferredSession = true
-      continue
+  const { changed: tabPtyChanged, ...tabPtyPatch } = clearSshTargetTabPtyState(
+    state,
+    targetId,
+    targetTabIds
+  )
+  const patch: Partial<AppState> = tabPtyChanged ? tabPtyPatch : {}
+  const assign = <K extends keyof AppState>(key: K, value: AppState[K] | undefined): void => {
+    if (value !== undefined) {
+      patch[key] = value
     }
-    nextDeferredSessions[tabId] = sessionId
   }
-
-  const nextDeferredTargets = state.deferredSshReconnectTargets.filter((id) => id !== targetId)
-  const nextConnectionStates = new Map(state.sshConnectionStates)
-  const removedConnectionState = nextConnectionStates.delete(targetId)
-  const nextLabels = new Map(state.sshTargetLabels)
-  const removedLabel = nextLabels.delete(targetId)
-  const nextHydrated = new Set(state.remoteWorkspaceHydratedTargetIds)
-  const removedHydrated = nextHydrated.delete(targetId)
-  const removedSyncStatus = Object.prototype.hasOwnProperty.call(
-    state.remoteWorkspaceSyncStatusByTargetId,
-    targetId
+  assign(
+    'deferredSshSessionIdsByTabId',
+    omitRemovedSshTargetTabSessions(state.deferredSshSessionIdsByTabId, targetId, targetTabIds)
   )
-  const removedPortForwards = Object.prototype.hasOwnProperty.call(
-    state.portForwardsByConnection,
-    targetId
+  // Why: pending-reconnect holds each tab's pre-restart session until reconnect
+  // drains it; if the target is removed first the entry is dead but the orphan
+  // sweep now reads it as liveness, so clear it here too (#9911).
+  assign(
+    'pendingReconnectPtyIdByTabId',
+    omitRemovedSshTargetTabSessions(state.pendingReconnectPtyIdByTabId, targetId, targetTabIds)
   )
-  const removedDetectedPorts = Object.prototype.hasOwnProperty.call(
-    state.detectedPortsByConnection,
-    targetId
+  assign(
+    'deferredSshReconnectTargets',
+    filterIfChanged(state.deferredSshReconnectTargets, (id) => id !== targetId)
   )
-  const nextSyncStatus = { ...state.remoteWorkspaceSyncStatusByTargetId }
-  delete nextSyncStatus[targetId]
-  const nextPortForwards = { ...state.portForwardsByConnection }
-  delete nextPortForwards[targetId]
-  const nextDetectedPorts = { ...state.detectedPortsByConnection }
-  delete nextDetectedPorts[targetId]
-  const nextCredentialQueue = state.sshCredentialQueue.filter((req) => req.targetId !== targetId)
-  const removedCredentialRequest = nextCredentialQueue.length !== state.sshCredentialQueue.length
-  const removedDeferredTarget =
-    nextDeferredTargets.length !== state.deferredSshReconnectTargets.length
-  const changed =
-    removedConnectionState ||
-    removedLabel ||
-    removedHydrated ||
-    removedSyncStatus ||
-    removedPortForwards ||
-    removedDetectedPorts ||
-    tabPtyState.changed ||
-    removedCredentialRequest ||
-    removedDeferredTarget ||
-    removedDeferredSession
-  if (!changed) {
-    return null
-  }
-
-  return {
-    ...(removedConnectionState ? { sshConnectionStates: nextConnectionStates } : {}),
-    ...(removedLabel ? { sshTargetLabels: nextLabels } : {}),
-    ...(removedHydrated ? { remoteWorkspaceHydratedTargetIds: nextHydrated } : {}),
-    ...(removedSyncStatus ? { remoteWorkspaceSyncStatusByTargetId: nextSyncStatus } : {}),
-    ...(removedPortForwards ? { portForwardsByConnection: nextPortForwards } : {}),
-    ...(removedDetectedPorts ? { detectedPortsByConnection: nextDetectedPorts } : {}),
-    ...(tabPtyState.changed
-      ? {
-          tabsByWorktree: tabPtyState.tabsByWorktree,
-          ptyIdsByTabId: tabPtyState.ptyIdsByTabId,
-          lastKnownRelayPtyIdByTabId: tabPtyState.lastKnownRelayPtyIdByTabId,
-          pendingCodexPaneRestartIds: tabPtyState.pendingCodexPaneRestartIds,
-          codexRestartNoticeByPtyId: tabPtyState.codexRestartNoticeByPtyId
-        }
-      : {}),
-    ...(removedCredentialRequest ? { sshCredentialQueue: nextCredentialQueue } : {}),
-    ...(removedDeferredTarget ? { deferredSshReconnectTargets: nextDeferredTargets } : {}),
-    ...(removedDeferredSession ? { deferredSshSessionIdsByTabId: nextDeferredSessions } : {})
-  }
+  assign(
+    'sshCredentialQueue',
+    filterIfChanged(state.sshCredentialQueue, (req) => req.targetId !== targetId)
+  )
+  assign(
+    'transientClearedAgentStatusConnectionIds',
+    omitKey(state.transientClearedAgentStatusConnectionIds, targetId)
+  )
+  assign('portForwardsByConnection', omitKey(state.portForwardsByConnection, targetId))
+  assign('detectedPortsByConnection', omitKey(state.detectedPortsByConnection, targetId))
+  assign('sshConnectionStates', withoutMapKey(state.sshConnectionStates, targetId))
+  assign('sshTargetLabels', withoutMapKey(state.sshTargetLabels, targetId))
+  // Why: a lingering generation would keep a deleted registration fenceable, and
+  // the id is reissued fresh on re-add, so the old value can never become right.
+  assign('sshTargetGenerations', withoutMapKey(state.sshTargetGenerations, targetId))
+  return Object.keys(patch).length > 0 ? patch : null
 }

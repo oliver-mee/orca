@@ -1,14 +1,19 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   getRuntimeMobileSessionSyncKey,
-  registerRuntimeTerminalTab,
-  runtimeMobileSessionSyncKeysEqual,
+  runtimeMobileSessionSyncKeysEqual
+} from './sync-runtime-graph/sync-key'
+import {
   scheduleRuntimeGraphSync,
   setRuntimeGraphStoreStateGetter,
   setRuntimeGraphSyncEnabled
 } from './sync-runtime-graph'
+import {
+  hasRegisteredRuntimeTerminalTab,
+  registerRuntimeTerminalTab
+} from './mounted-terminal-tab-registry'
 import type { AppState } from '../store/types'
-import type { TerminalTab } from '../../../shared/types'
+import type { TerminalTab } from '../../../shared/terminal-tab-types'
 
 function makeState(overrides: Partial<AppState> = {}): AppState {
   return {
@@ -58,14 +63,48 @@ async function flushMicrotasks(): Promise<void> {
   await Promise.resolve()
 }
 
+async function flushRuntimeGraphSyncTimer(): Promise<void> {
+  await vi.advanceTimersByTimeAsync(20)
+  await flushMicrotasks()
+}
+
 afterEach(() => {
   setRuntimeGraphSyncEnabled(false)
   setRuntimeGraphStoreStateGetter(null)
+  vi.useRealTimers()
   vi.unstubAllGlobals()
+})
+
+describe('runtime terminal registration ownership', () => {
+  it('ignores stale cleanup after a replacement registers the same tab', () => {
+    const first = registerRuntimeTerminalTab({
+      tabId: 'term-replaced',
+      worktreeId: 'wt-1',
+      getManager: () => null,
+      getContainer: () => null,
+      getPtyIdForPane: () => null,
+      getTabWideAgentHintLeafId: () => null
+    })
+    const second = registerRuntimeTerminalTab({
+      tabId: 'term-replaced',
+      worktreeId: 'wt-1',
+      getManager: () => null,
+      getContainer: () => null,
+      getPtyIdForPane: () => null,
+      getTabWideAgentHintLeafId: () => null
+    })
+
+    first()
+    expect(hasRegisteredRuntimeTerminalTab('term-replaced')).toBe(true)
+
+    second()
+    expect(hasRegisteredRuntimeTerminalTab('term-replaced')).toBe(false)
+  })
 })
 
 describe('scheduleRuntimeGraphSync', () => {
   it('coalesces updates that arrive while the runtime graph IPC is in flight', async () => {
+    vi.useFakeTimers()
     const syncCalls: {
       promise: Promise<void>
       resolve: (value: void | PromiseLike<void>) => void
@@ -82,7 +121,8 @@ describe('scheduleRuntimeGraphSync', () => {
       worktreeId: 'wt-1',
       getManager: () => null,
       getContainer: () => null,
-      getPtyIdForPane: () => null
+      getPtyIdForPane: () => null,
+      getTabWideAgentHintLeafId: () => null
     })
     setRuntimeGraphStoreStateGetter(() =>
       makeState({
@@ -91,19 +131,51 @@ describe('scheduleRuntimeGraphSync', () => {
     )
 
     setRuntimeGraphSyncEnabled(true)
-    await flushMicrotasks()
+    await flushRuntimeGraphSyncTimer()
 
     expect(syncWindowGraph).toHaveBeenCalledTimes(1)
     scheduleRuntimeGraphSync()
     scheduleRuntimeGraphSync()
-    await flushMicrotasks()
+    await flushRuntimeGraphSyncTimer()
 
     expect(syncWindowGraph).toHaveBeenCalledTimes(1)
     syncCalls[0]?.resolve()
     await flushMicrotasks()
+    await flushRuntimeGraphSyncTimer()
 
     expect(syncWindowGraph).toHaveBeenCalledTimes(2)
     syncCalls[1]?.resolve()
+    unregister()
+  })
+
+  it('coalesces updates that arrive before the frame timer fires', async () => {
+    vi.useFakeTimers()
+    const syncWindowGraph = vi.fn().mockResolvedValue(undefined)
+    vi.stubGlobal('window', { api: { runtime: { syncWindowGraph } } })
+    vi.stubGlobal('HTMLElement', class HTMLElement {})
+    const unregister = registerRuntimeTerminalTab({
+      tabId: 'term-1',
+      worktreeId: 'wt-1',
+      getManager: () => null,
+      getContainer: () => null,
+      getPtyIdForPane: () => null,
+      getTabWideAgentHintLeafId: () => null
+    })
+    setRuntimeGraphStoreStateGetter(() =>
+      makeState({
+        tabsByWorktree: { 'wt-1': [makeTerminalTab()] } as AppState['tabsByWorktree']
+      })
+    )
+
+    setRuntimeGraphSyncEnabled(true)
+    scheduleRuntimeGraphSync()
+    await flushMicrotasks()
+    scheduleRuntimeGraphSync()
+
+    expect(syncWindowGraph).toHaveBeenCalledTimes(0)
+    await flushRuntimeGraphSyncTimer()
+
+    expect(syncWindowGraph).toHaveBeenCalledTimes(1)
     unregister()
   })
 })

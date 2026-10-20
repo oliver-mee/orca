@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest'
 import type { DiscoveredSkill } from '../../../../shared/skills'
-import { countSkillsBySource, filterSkills } from './skills-filter'
+import {
+  SKILLS_FILTER_QUERY_MAX_BYTES,
+  countSkillsBySource,
+  filterSkills,
+  isSkillsFilterQueryTooLarge
+} from './skills-filter'
 
 function skill(overrides: Partial<DiscoveredSkill>): DiscoveredSkill {
   return {
@@ -14,7 +19,6 @@ function skill(overrides: Partial<DiscoveredSkill>): DiscoveredSkill {
     directoryPath: '/root/review',
     skillFilePath: '/root/review/SKILL.md',
     installed: true,
-    fileCount: 1,
     updatedAt: null,
     ...overrides
   }
@@ -33,14 +37,48 @@ describe('skills filtering', () => {
       })
     ]
 
+    // Why: the owning agent comes from the root a skill was found in, not from
+    // its provider list, which flattens ten agents into "agent-skills".
+    const agentByRootPath = new Map([
+      ['/home/dev/.codex/skills', 'codex'],
+      ['/repo/.claude/skills', 'claude']
+    ])
     expect(
-      filterSkills(skills, { query: 'docs', provider: 'claude', sourceKind: 'repo' }).map(
-        (item) => item.name
-      )
+      filterSkills(skills, { query: 'docs', agent: 'claude', sourceKind: 'repo' }, agentByRootPath)
+    ).toEqual([])
+    expect(
+      filterSkills(
+        skills,
+        { query: 'docs', agent: 'all', sourceKind: 'repo' },
+        agentByRootPath
+      ).map((item) => item.name)
     ).toEqual(['Docs Writer'])
-    expect(filterSkills(skills, { query: 'docs', provider: 'codex', sourceKind: 'all' })).toEqual(
-      []
-    )
+  })
+
+  it('rejects oversized pasted queries before reading skill metadata', () => {
+    const oversizedQuery = 'secret-skill-filter'.repeat(SKILLS_FILTER_QUERY_MAX_BYTES)
+    const throwingSkills = [
+      {
+        get sourceKind(): DiscoveredSkill['sourceKind'] {
+          throw new Error('oversized skill filters must not scan source kinds')
+        },
+        get providers(): DiscoveredSkill['providers'] {
+          throw new Error('oversized skill filters must not scan providers')
+        },
+        get name(): string {
+          throw new Error('oversized skill filters must not scan names')
+        }
+      }
+    ] as DiscoveredSkill[]
+
+    expect(isSkillsFilterQueryTooLarge(oversizedQuery)).toBe(true)
+    expect(
+      filterSkills(throwingSkills, {
+        query: oversizedQuery,
+        agent: 'all',
+        sourceKind: 'all'
+      })
+    ).toEqual([])
   })
 
   it('counts skills by source kind', () => {

@@ -1,4 +1,9 @@
-import { isAbsoluteSparseDirectoryPath, normalizeSparseDirectoryLines } from '@/lib/sparse-paths'
+import {
+  forEachSparseDirectoryInputLine,
+  hasSparseDirectoryParentSegment,
+  isAbsoluteSparseDirectoryPath,
+  normalizeSparseDirectoryLines
+} from '@/lib/sparse-paths'
 import { translate } from '@/i18n/i18n'
 
 export type SparsePresetDirectoryParseResult = {
@@ -7,13 +12,21 @@ export type SparsePresetDirectoryParseResult = {
 }
 
 export function parseSparsePresetDirectories(value: string): SparsePresetDirectoryParseResult {
-  const rawEntries = value
-    .split('\n')
-    .map((entry) => entry.trim())
-    .filter((entry) => entry.length > 0)
+  let hasAbsoluteEntry = false
+  forEachSparseDirectoryInputLine(value, (rawEntry) => {
+    const entry = rawEntry.trim()
+    if (entry.length === 0) {
+      return
+    }
+    if (isAbsoluteSparseDirectoryPath(entry)) {
+      hasAbsoluteEntry = true
+      return false
+    }
+    return undefined
+  })
 
   // Why: absolute paths can look repo-relative after slash normalization.
-  if (rawEntries.some(isAbsoluteSparseDirectoryPath)) {
+  if (hasAbsoluteEntry) {
     return {
       directories: [],
       error: translate(
@@ -32,7 +45,7 @@ export function parseSparsePresetDirectories(value: string): SparsePresetDirecto
     }
   }
 
-  if (directories.some((entry) => entry === '.' || entry.split('/').includes('..'))) {
+  if (directories.some((entry) => entry === '.' || hasSparseDirectoryParentSegment(entry))) {
     return {
       directories: [],
       error: translate(
@@ -46,4 +59,26 @@ export function parseSparsePresetDirectories(value: string): SparsePresetDirecto
     directories,
     error: null
   }
+}
+
+export function validateSparsePresetName(
+  name: string,
+  presets: readonly { id: string; name: string }[],
+  presetId?: string
+): string | null {
+  const trimmed = name.trim()
+  if (!trimmed) {
+    return translate('sparsePreset.nameRequired', 'Name is required.')
+  }
+  if (trimmed.length > 80) {
+    return translate('sparsePreset.nameTooLong', 'Name must be 80 characters or fewer.')
+  }
+  const collision = presets.find(
+    (preset) => preset.id !== presetId && preset.name.toLowerCase() === trimmed.toLowerCase()
+  )
+  return collision
+    ? translate('sparsePreset.nameExists', 'A preset named “{{name}}” already exists.', {
+        name: collision.name
+      })
+    : null
 }

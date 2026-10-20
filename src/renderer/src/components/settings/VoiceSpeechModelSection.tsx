@@ -1,6 +1,10 @@
+import { useState } from 'react'
 import { toast } from 'sonner'
-import type { VoiceSettings } from '../../../../shared/speech-types'
-import type { SpeechModelManifest, SpeechModelState } from '../../../../shared/speech-types'
+import type {
+  VoiceSettings,
+  SpeechModelManifest,
+  SpeechModelState
+} from '../../../../shared/speech-types'
 import { Button } from '../ui/button'
 import { Label } from '../ui/label'
 import {
@@ -11,6 +15,13 @@ import {
 } from '../ui/dropdown-menu'
 import { Cloud, Download, Trash2, Loader2, ChevronDown, Check } from 'lucide-react'
 import { translate } from '@/i18n/i18n'
+
+function describeSpeechModelDownloadError(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error)
+  // Why: ipcRenderer.invoke wraps main-process rejections; strip the transport
+  // prefix so the toast shows only the underlying download failure.
+  return message.replace(/^Error invoking remote method '[^']+': (?:Error: )?/, '')
+}
 
 type VoiceSpeechModelSectionProps = {
   voiceSettings: VoiceSettings
@@ -29,6 +40,7 @@ export function VoiceSpeechModelSection({
   onOpenOpenAiDialog,
   onRefreshModelStates
 }: VoiceSpeechModelSectionProps): React.JSX.Element {
+  const [pendingDeleteModelIds, setPendingDeleteModelIds] = useState<Set<string>>(() => new Set())
   const getModelState = (id: string): SpeechModelState | undefined =>
     modelStates.find((s) => s.id === id)
 
@@ -73,28 +85,32 @@ export function VoiceSpeechModelSection({
               mState?.status === 'downloading' || mState?.status === 'extracting'
             const isActive = voiceSettings.sttModel === manifest.id
             const isCloud = manifest.provider === 'openai'
+            const deletePending = pendingDeleteModelIds.has(manifest.id)
             const sizeMb = manifest.sizeBytes ? Math.round(manifest.sizeBytes / 1_000_000) : null
 
             return (
               <DropdownMenuItem
                 key={manifest.id}
                 disabled={isDownloading}
-                onSelect={() => {
+                onSelect={(event) => {
                   if (isReady) {
                     onUpdateVoiceSettings({ sttModel: manifest.id })
                   } else if (isCloud) {
                     onOpenOpenAiDialog(manifest.id)
                   } else if (!isDownloading) {
-                    void window.api.speech
-                      .downloadModel(manifest.id)
-                      .catch(() =>
-                        toast.error(
-                          translate(
-                            'auto.components.settings.VoicePane.cfde55c7b0',
-                            'Failed to download model.'
-                          )
-                        )
+                    // Why: download progress appears in this menu, so starting one should not dismiss it.
+                    event.preventDefault()
+                    void window.api.speech.downloadModel(manifest.id).catch((error: unknown) =>
+                      toast.error(
+                        translate(
+                          'auto.components.settings.VoicePane.cfde55c7b0',
+                          'Failed to download model.'
+                        ),
+                        // Why: the raw cause (e.g. net::ERR_CONTENT_LENGTH_MISMATCH)
+                        // is the only diagnosable signal users can report back.
+                        { description: describeSpeechModelDownloadError(error) }
                       )
+                    )
                   }
                 }}
                 className={`group flex items-center gap-2.5 py-2.5 ${
@@ -146,10 +162,34 @@ export function VoiceSpeechModelSection({
                     {manifest.description}
                   </p>
                 </div>
-                {!isCloud && isReady && !isActive ? (
-                  <button
-                    onClick={(e) => {
-                      e.stopPropagation()
+                {!isCloud && isReady ? (
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon-xs"
+                    aria-label={translate(
+                      'auto.components.settings.VoicePane.6fa734ed95',
+                      'Delete {{value0}}',
+                      {
+                        value0: manifest.label
+                      }
+                    )}
+                    disabled={deletePending}
+                    onMouseDown={(event) => {
+                      event.preventDefault()
+                      event.stopPropagation()
+                    }}
+                    onClick={(event) => {
+                      event.preventDefault()
+                      event.stopPropagation()
+                      if (deletePending) {
+                        return
+                      }
+                      setPendingDeleteModelIds((prev) => {
+                        const next = new Set(prev)
+                        next.add(manifest.id)
+                        return next
+                      })
                       void window.api.speech
                         .deleteModel(manifest.id)
                         .then(onRefreshModelStates)
@@ -161,11 +201,22 @@ export function VoiceSpeechModelSection({
                             )
                           )
                         )
+                        .finally(() =>
+                          setPendingDeleteModelIds((prev) => {
+                            const next = new Set(prev)
+                            next.delete(manifest.id)
+                            return next
+                          })
+                        )
                     }}
-                    className="shrink-0 p-1 text-muted-foreground can-hover:opacity-0 group-hover:opacity-100 hover:text-destructive transition-all rounded"
+                    className="shrink-0 text-muted-foreground can-hover:opacity-0 group-hover:opacity-100 hover:text-destructive disabled:opacity-60 disabled:hover:text-muted-foreground"
                   >
-                    <Trash2 className="size-3" />
-                  </button>
+                    {deletePending ? (
+                      <Loader2 className="size-3 animate-spin" />
+                    ) : (
+                      <Trash2 className="size-3" />
+                    )}
+                  </Button>
                 ) : !isCloud && !isReady && !isDownloading ? (
                   <span className="shrink-0 p-1 text-muted-foreground can-hover:opacity-0 group-hover:opacity-100 transition-opacity">
                     <Download className="size-3" />

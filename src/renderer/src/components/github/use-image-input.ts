@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { toast } from 'sonner'
 import type { Editor } from '@tiptap/react'
-import { isHttpImageUrl } from './github-markdown-composer-preview-pane'
+import { getGitHubMarkdownImageUrlState } from './github-markdown-image-url'
+import { buildRichMarkdownImageInsertContent } from '@/components/editor/rich-markdown-image-insert-content'
 import { translate } from '@/i18n/i18n'
 
 export function useImageInput(
@@ -29,11 +30,20 @@ export function useImageInput(
 
   const insertImageUrl = useCallback(() => {
     const editor = editorRef.current
-    const trimmed = imageUrl.trim()
-    if (!editor || !trimmed) {
+    const imageUrlState = getGitHubMarkdownImageUrlState(imageUrl)
+    if (!editor || imageUrlState.status === 'empty') {
       return
     }
-    if (!isHttpImageUrl(trimmed)) {
+    if (imageUrlState.status === 'too-large') {
+      toast.error(
+        translate(
+          'auto.components.github.GitHubMarkdownComposer.imageUrlTooLarge',
+          'Image URL is too large.'
+        )
+      )
+      return
+    }
+    if (imageUrlState.status === 'invalid') {
       toast.error(
         translate(
           'auto.components.github.GitHubMarkdownComposer.ec6310b731',
@@ -45,7 +55,11 @@ export function useImageInput(
     editor
       .chain()
       .focus()
-      .insertContent({ type: 'image', attrs: { src: trimmed } })
+      .insertContent(
+        buildRichMarkdownImageInsertContent(editor, editor.state.selection.from, {
+          src: imageUrlState.url
+        })
+      )
       .run()
     setImageUrl('')
     setImageInputOpen(false)

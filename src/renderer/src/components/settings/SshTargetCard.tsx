@@ -1,18 +1,9 @@
 import { useCallback, useRef, useState } from 'react'
-import {
-  CircleStop,
-  Loader2,
-  MonitorSmartphone,
-  Pencil,
-  RotateCcw,
-  Server,
-  ServerOff,
-  Trash2
-} from 'lucide-react'
+import { Loader2, MonitorSmartphone, Pencil, Server, ServerOff, Trash2 } from 'lucide-react'
 import type {
-  SshTarget,
   SshConnectionState,
-  SshConnectionStatus
+  SshConnectionStatus,
+  SshTarget
 } from '../../../../shared/ssh-types'
 import { Button } from '../ui/button'
 import { Tooltip, TooltipContent, TooltipTrigger } from '../ui/tooltip'
@@ -60,8 +51,6 @@ type SshTargetCardProps = {
   busyAction?: SshTargetBusyAction
   onConnect: (targetId: string) => void | Promise<void>
   onDisconnect: (targetId: string) => void | Promise<void>
-  onTerminateSessions: (targetId: string) => void | Promise<void>
-  onResetRelay: (targetId: string) => void | Promise<void>
   onTest: (targetId: string) => void | Promise<void>
   onEdit: (target: SshTarget) => void
   onRemove: (targetId: string) => void
@@ -74,19 +63,13 @@ export function SshTargetCard({
   busyAction,
   onConnect,
   onDisconnect,
-  onTerminateSessions,
-  onResetRelay,
   onTest,
   onEdit,
   onRemove
 }: SshTargetCardProps): React.JSX.Element {
   const status: SshConnectionStatus = state?.status ?? 'disconnected'
-  const [actionInFlight, setActionInFlight] = useState<
-    'connect' | 'disconnect' | 'terminate' | 'reset' | null
-  >(null)
+  const [actionInFlight, setActionInFlight] = useState<'connect' | 'disconnect' | null>(null)
   const hasActionInFlight = actionInFlight !== null || busyAction !== undefined
-  const terminateInFlight = actionInFlight === 'terminate' || busyAction === 'terminate'
-  const resetInFlight = actionInFlight === 'reset' || busyAction === 'reset'
   const removeInFlight = busyAction === 'remove'
   const mountedRef = useRef(true)
   const endpoint = target.username
@@ -121,91 +104,8 @@ export function SshTargetCard({
     void Promise.resolve(onDisconnect(target.id)).finally(clearActionInFlight)
   }
 
-  const handleTerminateSessions = (): void => {
-    if (actionInFlight) {
-      return
-    }
-    setActionInFlight('terminate')
-    void Promise.resolve(onTerminateSessions(target.id)).finally(clearActionInFlight)
-  }
-
-  const handleResetRelay = (): void => {
-    if (actionInFlight) {
-      return
-    }
-    setActionInFlight('reset')
-    void Promise.resolve(onResetRelay(target.id)).finally(clearActionInFlight)
-  }
-
-  const renderEndRemoteTerminalsButton = (): React.JSX.Element => (
-    <Tooltip>
-      <TooltipTrigger asChild>
-        <Button
-          variant="ghost"
-          size="icon"
-          onClick={handleTerminateSessions}
-          className="size-7 text-muted-foreground hover:text-red-400"
-          disabled={hasActionInFlight}
-          aria-label={
-            terminateInFlight
-              ? translate(
-                  'auto.components.settings.SshTargetCard.c77f1abfe3',
-                  'Ending remote terminals'
-                )
-              : translate(
-                  'auto.components.settings.SshTargetCard.da16e108e6',
-                  'End remote terminals'
-                )
-          }
-        >
-          {terminateInFlight ? (
-            <Loader2 className="size-3 animate-spin" />
-          ) : (
-            <CircleStop className="size-3" />
-          )}
-        </Button>
-      </TooltipTrigger>
-      <TooltipContent side="top" sideOffset={4}>
-        {translate('auto.components.settings.SshTargetCard.da16e108e6', 'End remote terminals')}
-      </TooltipContent>
-    </Tooltip>
-  )
-
-  const renderResetRelayButton = (): React.JSX.Element => (
-    <Tooltip>
-      <TooltipTrigger asChild>
-        <Button
-          variant="ghost"
-          size="icon"
-          onClick={handleResetRelay}
-          className="size-7 text-muted-foreground hover:text-red-400"
-          disabled={hasActionInFlight}
-          aria-label={
-            resetInFlight
-              ? translate(
-                  'auto.components.settings.SshTargetCard.97dea4e8cf',
-                  'Resetting remote relay'
-                )
-              : translate('auto.components.settings.SshTargetCard.762a48c662', 'Reset remote relay')
-          }
-        >
-          {resetInFlight ? (
-            <Loader2 className="size-3 animate-spin" />
-          ) : (
-            <RotateCcw className="size-3" />
-          )}
-        </Button>
-      </TooltipTrigger>
-      <TooltipContent side="top" sideOffset={4}>
-        {translate('auto.components.settings.SshTargetCard.762a48c662', 'Reset remote relay')}
-      </TooltipContent>
-    </Tooltip>
-  )
-
-  const renderSecondaryIconActions = (includeEndRemoteTerminals: boolean): React.JSX.Element => (
+  const renderSecondaryIconActions = (): React.JSX.Element => (
     <div className="flex items-center gap-1">
-      {includeEndRemoteTerminals ? renderEndRemoteTerminalsButton() : null}
-      {isSshTargetConnecting(status) ? null : renderResetRelayButton()}
       <Tooltip>
         <TooltipTrigger asChild>
           <Button
@@ -257,6 +157,8 @@ export function SshTargetCard({
   return (
     <div
       ref={handleCardRef}
+      data-ssh-target-card=""
+      data-ssh-target-label={target.label}
       className="flex items-center gap-3 rounded-lg border border-border/50 bg-card/40 px-4 py-3"
     >
       <Server className="size-4 shrink-0 text-muted-foreground" />
@@ -271,15 +173,18 @@ export function SshTargetCard({
           {endpoint}
           {target.identityFile ? ` \u2022 ${target.identityFile}` : ''}
         </p>
-        {state?.error ? (
-          <p className="mt-0.5 truncate text-xs text-red-400">{state.error}</p>
+        {/* Why not truncate: host key failures put the remedy (`ssh-keygen -R <host>`) at the end,
+            and a one-line clamp with no tooltip made it unreachable even on hover. */}
+        {/* An unserved host's status line below says why, translated; this is its English twin. */}
+        {state?.error && state.managedServer?.kind !== 'relay' ? (
+          <p className="mt-0.5 text-xs text-red-400 [overflow-wrap:anywhere]">{state.error}</p>
         ) : null}
       </div>
 
       <div className="flex shrink-0 items-center gap-1">
         {status === 'connected' ? (
           <>
-            {renderSecondaryIconActions(true)}
+            {renderSecondaryIconActions()}
             <Button
               variant="ghost"
               size="xs"
@@ -293,7 +198,7 @@ export function SshTargetCard({
           </>
         ) : isSshTargetConnecting(status) ? (
           <>
-            {renderSecondaryIconActions(false)}
+            {renderSecondaryIconActions()}
             <Button variant="ghost" size="xs" disabled className="gap-1.5">
               <Loader2 className="size-3 animate-spin" />
               {translate('auto.components.settings.SshTargetCard.1810b51482', 'Connecting')}
@@ -301,7 +206,7 @@ export function SshTargetCard({
           </>
         ) : (
           <>
-            {renderSecondaryIconActions(true)}
+            {renderSecondaryIconActions()}
             <Button
               variant="ghost"
               size="xs"

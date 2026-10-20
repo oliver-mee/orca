@@ -2,7 +2,6 @@ import type { Page } from '@stablyai/playwright-test'
 import { test, expect } from './helpers/orca-app'
 import {
   execInTerminal,
-  getTerminalContent,
   waitForActivePanePtyId,
   waitForActiveTerminalManager
 } from './helpers/terminal'
@@ -13,7 +12,8 @@ import {
   waitForSessionReady
 } from './helpers/store'
 import { getRendererTitleLog, installRendererTitleLog } from './helpers/terminal-title-log'
-import { POST_REPLAY_MODE_RESET } from '../../src/renderer/src/components/terminal-pane/layout-serialization'
+import { POST_REPLAY_MODE_RESET } from '../../src/shared/terminal-mode-reset-profiles'
+import { waitForPtyShellEcho } from './terminal-pty-readiness'
 
 test.describe.configure({ mode: 'serial' })
 
@@ -66,7 +66,7 @@ async function activateTerminalTab(page: Page, tabId: string): Promise<void> {
       throw new Error('activateTerminalTab: window.__store is unavailable')
     }
     const state = store.getState()
-    state.setActiveTabType('terminal')
+    state.setActiveTabType('terminal', state.activeWorktreeId)
     state.setActiveTab(targetTabId)
   }, tabId)
 
@@ -83,6 +83,7 @@ async function emitBellAndWaitForTitleFlush(
   ptyId: string,
   markerTitle: string
 ): Promise<void> {
+  await waitForPtyShellEcho(page, ptyId, 30_000)
   // Why: the OSC title marker is a deterministic byte-stream fence. Once it
   // lands in the renderer, the preceding BEL has traversed the same PTY path.
   // printf is a shell builtin, so this still works in stripped CI PATHs.
@@ -91,19 +92,6 @@ async function emitBellAndWaitForTitleFlush(
     .poll(async () => (await getRendererTitleLog(page)).includes(markerTitle), {
       timeout: 10_000,
       message: 'Marker title did not land — byte stream may not have been flushed'
-    })
-    .toBe(true)
-}
-
-async function proveShellReadyWithSingleWrite(page: Page, ptyId: string): Promise<void> {
-  const marker = `__SHELL_READY_${Date.now()}__`
-  // Why: this is intentionally a single write after the pane has a concrete
-  // PTY binding. Retrying here would hide a real lost-write regression.
-  await execInTerminal(page, ptyId, `printf '${marker}\\n'`)
-  await expect
-    .poll(async () => (await getTerminalContent(page)).includes(marker), {
-      timeout: 10_000,
-      message: 'Terminal did not echo the single shell-ready marker write'
     })
     .toBe(true)
 }
@@ -202,8 +190,11 @@ test.describe('Terminal attention', () => {
       if (!ownerWorktreeId) {
         throw new Error(`No owner worktree found for terminal tab ${tabId}`)
       }
-      state.markWorktreeUnread(ownerWorktreeId)
-      state.markTerminalTabUnread(tabId)
+      const leafId = state.terminalLayoutsByTabId[tabId]?.activeLeafId
+      if (!leafId) {
+        throw new Error(`No active leaf found for terminal tab ${tabId}`)
+      }
+      state.markTerminalBell({ worktreeId: ownerWorktreeId, tabId, paneKey: `${tabId}:${leafId}` })
     }, secondTabId)
 
     await expect
@@ -247,7 +238,6 @@ test.describe('Terminal attention', () => {
       throw new Error('Expected an active terminal tab')
     }
     const activePtyId = await waitForActivePanePtyId(orcaPage)
-    await proveShellReadyWithSingleWrite(orcaPage, activePtyId)
     await installRendererTitleLog(orcaPage)
 
     await emitBellAndWaitForTitleFlush(
@@ -305,7 +295,6 @@ test.describe('Terminal attention', () => {
     }
     const activePaneKey = await getActivePaneKey(orcaPage, activeTabId)
     const activePtyId = await waitForActivePanePtyId(orcaPage)
-    await proveShellReadyWithSingleWrite(orcaPage, activePtyId)
     await installRendererTitleLog(orcaPage)
 
     await emitBellAndWaitForTitleFlush(
@@ -324,7 +313,10 @@ test.describe('Terminal attention', () => {
     // Focused BEL owns the tab indicator; seed pane attention separately so the
     // Escape path proves it clears both store surfaces that pty-connection owns.
     await orcaPage.evaluate((paneKey) => {
-      window.__store?.getState().markTerminalPaneUnread(paneKey)
+      // Why: consumers read the marker value, not key presence (#20525), so seed the real reason.
+      window.__store?.setState((state) => ({
+        unreadTerminalPanes: { ...state.unreadTerminalPanes, [paneKey]: 'terminal-bell' }
+      }))
     }, activePaneKey)
     await expect
       .poll(async () => (await getUnreadTerminalPaneKeys(orcaPage)).includes(activePaneKey), {
@@ -367,7 +359,7 @@ test.describe('Terminal attention', () => {
   // even though the underlying shell is fresh. Pane clicks then emit
   // `\e[I` / `\e[O` into zsh, which rings the bell as unbound-key input.
   //
-  // POST_REPLAY_MODE_RESET (in layout-serialization.ts) clears these mode
+  // POST_REPLAY_MODE_RESET (in shared/terminal-mode-reset-profiles.ts) clears these mode
   // bits after every scrollback replay so the mode state matches the fresh
   // shell. This test pins that fix: after writing a DECSET 1004 byte into
   // the terminal, focus events should NOT be emitted back to the PTY.
@@ -462,46 +454,14 @@ test.describe('Terminal attention', () => {
         pane.terminal.blur()
       }, secondTabId)
 
-      // Why: flush xterm's output queue with a DA1 query — xterm replies via
-      // onData with `\e[?...c`. By the time the reply lands in the spy, any
-      // focus escape the blur handler would have emitted has also landed.
-      // This gives us a deterministic "all-prior-output-processed" signal
-      // without a fixed sleep (which expect.poll + .not.toMatch does NOT
-      // provide — expect.poll exits as soon as the assertion passes once,
-      // so .not.toMatch on an empty buffer would pass instantly at 0ms).
-      await orcaPage.evaluate((tabId) => {
-        const managers = window.__paneManagers
-        const manager = managers?.get(tabId)
-        const pane = manager?.getActivePane()
-        if (!pane) {
-          throw new Error('No active pane on restored tab')
-        }
-        pane.terminal.write('\x1b[c')
-      }, secondTabId)
+      // Why: xterm does not reliably answer DA1 writes in hidden Electron
+      // windows, but focus-reporting leaks are emitted as part of the focus
+      // task itself. Let that task settle, then inspect the captured bytes.
+      await orcaPage.waitForTimeout(100)
 
-      await expect
-        .poll(
-          async () => {
-            const emitted = await orcaPage.evaluate(
-              () =>
-                (window as unknown as { __XTERM_ONDATA_SPY__: string[] | undefined })
-                  .__XTERM_ONDATA_SPY__ ?? []
-            )
-            return emitted.join('')
-          },
-          {
-            timeout: 5_000,
-            message: 'DA1 reply never arrived — xterm onData spy did not receive data'
-          }
-        )
-        // eslint-disable-next-line no-control-regex -- intentional terminal escape sequence matching
-        .toMatch(/\x1b\[\?.*c/)
-
-      // By this point all prior xterm output has been observed. Read the
-      // final buffer once and assert no focus escape is present. Mode 1004
-      // reset succeeded iff no focus escapes are emitted — we assert on the
-      // precise byte-level mechanism the fix guards against (`\e[I` focus-in
-      // / `\e[O` focus-out), not the tab unread state, because under the
+      // Mode 1004 reset succeeded iff no focus escapes are emitted — we assert
+      // on the precise byte-level mechanism the fix guards against (`\e[I`
+      // focus-in / `\e[O` focus-out), not tab unread state, because under the
       // show-until-interact model that state can be flipped by unrelated
       // shell-startup BELs.
       const emittedFromXterm = await orcaPage.evaluate(

@@ -1,19 +1,22 @@
+import type { GhAccountBinding } from '../../../../shared/github/account-binding'
 import { useCallback, useRef, useState } from 'react'
-import type { OrcaHooks, Repo, RepoHookSettings } from '../../../../shared/types'
+import type { OrcaHooks, RepoHookSettings } from '../../../../shared/orca-yaml-hook-types'
+import type { Project, ProjectUpdateArgs } from '../../../../shared/project-types'
+import type { Repo } from '../../../../shared/repo-types'
 import { getRepoKindLabel, isFolderRepo } from '../../../../shared/repo-kind'
-import { Button } from '../ui/button'
+import { getRepoExecutionHostId, type ExecutionHostId } from '../../../../shared/execution-host'
 import { Label } from '../ui/label'
 import { Separator } from '../ui/separator'
-import { Trash2 } from 'lucide-react'
-import { Tooltip, TooltipContent, TooltipTrigger } from '../ui/tooltip'
-import { BaseRefPicker } from './BaseRefPicker'
+import { useShallow } from 'zustand/react/shallow'
 import { RepositoryHooksSection } from './RepositoryHooksSection'
 import { McpConfigSection } from './McpConfigSection'
 import { WorktreeSymlinksSection } from './WorktreeSymlinksSection'
 import { SparsePresetSettingsSection } from './SparsePresetSettingsSection'
 import { RepositorySourceControlAiSection } from './RepositorySourceControlAiSection'
 import { SearchableSetting } from './SearchableSetting'
-import { matchesSettingsSearch, normalizeSettingsSearchQuery } from './settings-search'
+import { RepositoryRemoveProjectButton } from './RepositoryRemoveProjectButton'
+import type { SettingsProjectRemovalScope } from './settings-project-list'
+import { matchesSettingsSearch } from './settings-search'
 import { useAppStore } from '../../store'
 import { getRepositoryIconSectionId } from './repository-settings-targets'
 import { RepositoryIconPicker } from './RepositoryIconPicker'
@@ -21,12 +24,27 @@ import { getRepositoryPaneSearchEntries } from './repository-search'
 import { RepositoryHostSetupsSection } from './RepositoryHostSetupsSection'
 import { RepoSettingsDraftInput } from './RepositorySettingsDraftInput'
 import { RepositoryForkSyncSection } from './RepositoryForkSyncSection'
+import { RepositoryGitHubAccountSection } from './RepositoryGitHubAccountSection'
 import { translate } from '@/i18n/i18n'
+import { RepositoryWindowsRuntimeSection } from './RepositoryWindowsRuntimeSection'
+import { matchesRepositoryIdentitySearch } from './repository-identity-search'
+import { RepositoryWorktreeDefaultsSection } from './RepositoryWorktreeDefaultsSection'
+import { RepositoryJiraProjectSection } from './RepositoryJiraProjectSection'
+import { getProjectRuntimeSessionSummary } from './repository-runtime-session-summary'
+import { getRepoOwnerWorktreeVisibilityDefaults } from '../../store/worktree-visibility-defaults-by-host'
 export { getRepositoryPaneSearchEntries }
+export { matchesRepositoryIdentitySearch } from './repository-identity-search'
 
-type RepositoryPaneRepoUpdate = Omit<Partial<Repo>, 'sourceControlAi'> & {
+type RepositoryPaneRepoUpdate = Omit<
+  Partial<Repo>,
+  'sourceControlAi' | 'externalWorktreeVisibility' | 'ghAccount'
+> & {
   sourceControlAi?: Repo['sourceControlAi'] | null
+  externalWorktreeVisibility?: Repo['externalWorktreeVisibility'] | null
+  ghAccount?: GhAccountBinding | null
 }
+
+const EMPTY_WSL_DISTROS: string[] = []
 
 type RepositoryPaneProps = {
   repo: Repo
@@ -34,18 +52,25 @@ type RepositoryPaneProps = {
   hasHooksFile: boolean
   hooksInspectionReady: boolean
   mayNeedUpdate: boolean
-  updateRepo: (repoId: string, updates: RepositoryPaneRepoUpdate) => void
+  updateRepo: (
+    repoId: string,
+    updates: RepositoryPaneRepoUpdate,
+    options?: { hostId?: ExecutionHostId }
+  ) => void | Promise<boolean>
   removeProject: (repoId: string) => void
-}
-
-export function matchesRepositoryIdentitySearch(query: string, repo: Repo): boolean {
-  const normalizedQuery = normalizeSettingsSearchQuery(query)
-  if (!normalizedQuery) {
-    return false
-  }
-  return [repo.displayName, repo.path].some((value) =>
-    value.toLowerCase().includes(normalizedQuery)
-  )
+  project?: Project | null
+  selectedProjectSetupId?: string
+  settingsSelectionKey?: string
+  settingsEntryRepoIds?: ReadonlySet<string>
+  removalScope?: SettingsProjectRemovalScope
+  isLocalWindowsProject?: boolean
+  wslAvailable?: boolean
+  wslDistros?: string[]
+  wslCapabilitiesLoading?: boolean
+  updateProject?: (
+    projectId: string,
+    updates: ProjectUpdateArgs['updates']
+  ) => void | Promise<unknown>
 }
 
 export function RepositoryPane({
@@ -55,13 +80,48 @@ export function RepositoryPane({
   hooksInspectionReady,
   mayNeedUpdate,
   updateRepo,
-  removeProject
+  removeProject,
+  project = null,
+  selectedProjectSetupId,
+  settingsSelectionKey,
+  settingsEntryRepoIds,
+  removalScope = 'project',
+  isLocalWindowsProject = false,
+  wslAvailable = false,
+  wslDistros = EMPTY_WSL_DISTROS,
+  wslCapabilitiesLoading = false,
+  updateProject
 }: RepositoryPaneProps): React.JSX.Element {
   const isFolder = isFolderRepo(repo)
+  // Why: this pane renders the switcher-selected host's repo row. Bind every
+  // edit to that host so identity/host-specific writes land on the selected
+  // host, not findRepoForHost's focused-host fallback (the same-id/self-pair
+  // case where local and a runtime share one repo id).
+  const selectedHostId = getRepoExecutionHostId(repo)
+  const updateSelectedRepo = useCallback(
+    (repoId: string, updates: RepositoryPaneRepoUpdate) =>
+      updateRepo(repoId, updates, { hostId: selectedHostId }),
+    [updateRepo, selectedHostId]
+  )
   const searchQuery = useAppStore((state) => state.settingsSearchQuery)
   const settings = useAppStore((state) => state.settings)
-  const symlinksEnabled = settings?.experimentalWorktreeSymlinks
-  const [confirmingRemove, setConfirmingRemove] = useState<string | null>(null)
+  const worktreeVisibilityDefaultsByHost = useAppStore(
+    (state) => state.worktreeVisibilityDefaultsByHost
+  )
+  const repoOwnerSettings = settings
+    ? {
+        ...settings,
+        worktreeVisibilityDefaults: getRepoOwnerWorktreeVisibilityDefaults(
+          repo,
+          settings,
+          worktreeVisibilityDefaultsByHost
+        )
+      }
+    : null
+  const fetchWorktrees = useAppStore((state) => state.fetchWorktrees)
+  const runtimeSessionSummary = useAppStore(
+    useShallow((state) => getProjectRuntimeSessionSummary(state, repo.id))
+  )
   const [copiedTemplate, setCopiedTemplate] = useState(false)
   const copiedTemplateResetTimerRef = useRef<number | null>(null)
   // Why: clipboard IPC can resolve after settings navigation; avoid starting
@@ -88,18 +148,8 @@ export function RepositoryPane({
     [clearCopiedTemplateResetTimer]
   )
 
-  const handleRemoveProject = (repoId: string) => {
-    if (confirmingRemove === repoId) {
-      removeProject(repoId)
-      setConfirmingRemove(null)
-      return
-    }
-
-    setConfirmingRemove(repoId)
-  }
-
   const updateSelectedRepoHookSettings = (nextSettings: RepoHookSettings) => {
-    updateRepo(repo.id, {
+    updateSelectedRepo(repo.id, {
       hookSettings: nextSettings
     })
   }
@@ -123,16 +173,20 @@ export function RepositoryPane({
     }, 1500)
   }
 
-  const allEntries = getRepositoryPaneSearchEntries(repo)
+  const allEntries = getRepositoryPaneSearchEntries(repo, { isLocalWindowsProject })
   const identityEntryTitles = new Set([
     translate('auto.components.settings.repository.search.7e1e456a95', 'Display Name'),
     translate('auto.components.settings.repository.search.b24f00294a', 'Project Icon'),
+    translate('components.RepositoryJiraProjectSection.title', 'Default Jira project'),
+    translate('auto.components.settings.repository.search.githubAccount', 'GitHub Account'),
     translate(
       'auto.components.settings.repository.search.keepForkUpToDate',
       'Keep Fork Up to Date'
     ),
     translate('auto.components.settings.repository.search.094adbe930', 'Default Worktree Base'),
     translate('auto.components.settings.repository.search.443d127b5a', 'Worktree Location'),
+    translate('auto.components.settings.repository.search.externalWorktrees', 'External worktrees'),
+    translate('auto.components.settings.repository.search.projectRuntime', 'Project Runtime'),
     translate('auto.components.settings.repository.search.c5266c2c9d', 'Remove Project')
   ])
   const identityEntries = allEntries.filter((entry) => identityEntryTitles.has(entry.title))
@@ -149,11 +203,10 @@ export function RepositoryPane({
     ].includes(entry.title)
   )
   const mcpEntries = allEntries.filter((entry) => entry.title === 'MCP Configs')
-  const symlinkEntries = allEntries.filter((entry) => entry.title === 'Worktree Symlinks')
+  const symlinkEntries = allEntries.filter((entry) => entry.title === 'Worktree Shared Paths')
   const sourceControlAiEntries = allEntries.filter((entry) => entry.title === 'Git AI Author')
   const hostSetupEntries = allEntries.filter((entry) => entry.title === 'Available Hosts')
-  const removeProjectLabel =
-    confirmingRemove === repo.id ? 'Confirm Remove Project' : 'Remove Project'
+  const projectRuntimeEntries = allEntries.filter((entry) => entry.title === 'Project Runtime')
 
   const hooksSection =
     !isFolder && (forceFullPaneForRepoMatch || matchesSettingsSearch(searchQuery, hooksEntries)) ? (
@@ -189,7 +242,7 @@ export function RepositoryPane({
               )}
             </p>
             <p className="text-xs text-muted-foreground">
-              {translate('auto.components.settings.RepositoryPane.323debba71', 'Type:')}
+              {translate('auto.components.settings.RepositoryPane.323debba71', 'Type:')}{' '}
               <span className="text-foreground">{getRepoKindLabel(repo)}</span>
             </p>
             {isFolder ? (
@@ -201,37 +254,12 @@ export function RepositoryPane({
               </p>
             ) : null}
           </div>
-          <SearchableSetting
-            title={translate(
-              'auto.components.settings.RepositoryPane.0909e5d650',
-              'Remove Project'
-            )}
-            description={translate(
-              'auto.components.settings.RepositoryPane.170624bdfb',
-              'Remove this project from Orca.'
-            )}
-            keywords={[repo.displayName, 'delete', 'project', 'repository']}
-            className="absolute top-0 right-0 z-10 w-auto max-w-none"
+          <RepositoryRemoveProjectButton
+            repo={repo}
+            removalScope={removalScope}
             forceVisible={forceFullPaneForRepoMatch}
-          >
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <Button
-                  type="button"
-                  variant={confirmingRemove === repo.id ? 'destructive' : 'outline'}
-                  size="icon-sm"
-                  onClick={() => handleRemoveProject(repo.id)}
-                  onBlur={() => setConfirmingRemove(null)}
-                  aria-label={removeProjectLabel}
-                >
-                  <Trash2 className="size-3.5" />
-                </Button>
-              </TooltipTrigger>
-              <TooltipContent side="top" sideOffset={4}>
-                {removeProjectLabel}
-              </TooltipContent>
-            </Tooltip>
-          </SearchableSetting>
+            removeProject={removeProject}
+          />
         </div>
 
         <SearchableSetting
@@ -251,7 +279,7 @@ export function RepositoryPane({
             id={`repo-display-name-${repo.id}`}
             repoId={repo.id}
             storeValue={repo.displayName}
-            onTextChange={(text) => updateRepo(repo.id, { displayName: text })}
+            onTextChange={(text) => updateSelectedRepo(repo.id, { displayName: text })}
             className="h-9 text-sm"
           />
         </SearchableSetting>
@@ -276,105 +304,67 @@ export function RepositoryPane({
           id={getRepositoryIconSectionId(repo.id)}
           forceVisible={forceFullPaneForRepoMatch}
         >
-          <RepositoryIconPicker repo={repo} updateRepo={updateRepo} />
+          <RepositoryIconPicker repo={repo} updateRepo={updateSelectedRepo} />
         </SearchableSetting>
+
+        <RepositoryJiraProjectSection
+          key={`${selectedHostId}:${repo.id}`}
+          repo={repo}
+          updateRepo={updateSelectedRepo}
+          forceVisible={forceFullPaneForRepoMatch}
+        />
 
         {!isFolder ? (
           <>
             <RepositoryHostSetupsSection
               repo={repo}
+              selectedProjectSetupId={selectedProjectSetupId}
+              settingsSelectionKey={settingsSelectionKey}
+              settingsEntryRepoIds={settingsEntryRepoIds}
               forceVisible={forceFullPaneForRepoMatch}
               searchQuery={searchQuery}
               searchEntries={hostSetupEntries}
             />
 
+            <RepositoryWindowsRuntimeSection
+              repoDisplayName={repo.displayName}
+              project={project}
+              settings={settings}
+              isLocalWindowsProject={isLocalWindowsProject}
+              wslAvailable={wslAvailable}
+              wslDistros={wslDistros}
+              wslCapabilitiesLoading={wslCapabilitiesLoading}
+              runtimeSessionSummary={runtimeSessionSummary}
+              updateProject={updateProject}
+              forceVisible={forceFullPaneForRepoMatch}
+              searchQuery={searchQuery}
+              searchEntries={projectRuntimeEntries}
+            />
+
             <RepositoryForkSyncSection
               repo={repo}
-              updateRepo={updateRepo}
+              updateRepo={updateSelectedRepo}
               forceVisible={forceFullPaneForRepoMatch}
             />
 
-            <SearchableSetting
-              title={translate(
-                'auto.components.settings.RepositoryPane.f88db4fece',
-                'Default Worktree Base'
-              )}
-              description={translate(
-                'auto.components.settings.RepositoryPane.8984d06520',
-                'Default base branch or ref when creating worktrees.'
-              )}
-              keywords={[repo.displayName, 'base ref', 'branch']}
-              className="space-y-3"
+            <RepositoryGitHubAccountSection
+              repo={repo}
+              updateRepo={updateSelectedRepo}
               forceVisible={forceFullPaneForRepoMatch}
-            >
-              <Label className="text-sm font-semibold">
-                {translate(
-                  'auto.components.settings.RepositoryPane.f88db4fece',
-                  'Default Worktree Base'
-                )}
-              </Label>
-              <BaseRefPicker
-                repoId={repo.id}
-                currentBaseRef={repo.worktreeBaseRef}
-                onSelect={(ref) => updateRepo(repo.id, { worktreeBaseRef: ref })}
-                onUsePrimary={() => updateRepo(repo.id, { worktreeBaseRef: undefined })}
-              />
-            </SearchableSetting>
+            />
 
-            <SearchableSetting
-              title={translate(
-                'auto.components.settings.RepositoryPane.e9bd57a336',
-                'Worktree Location'
-              )}
-              description={translate(
-                'auto.components.settings.RepositoryPane.e63bb96a9b',
-                'Project-specific directory for new worktrees.'
-              )}
-              keywords={[
-                repo.displayName,
-                'worktree path',
-                'workspace path',
-                'directory',
-                'relative',
-                '../worktrees'
-              ]}
-              className="space-y-2"
+            <RepositoryWorktreeDefaultsSection
+              repo={repo}
+              settings={repoOwnerSettings}
+              updateRepo={updateSelectedRepo}
+              refreshRepo={(repoId) =>
+                fetchWorktrees(repoId, {
+                  executionHostId: selectedHostId,
+                  requireAuthoritative: true
+                })
+              }
               forceVisible={forceFullPaneForRepoMatch}
-            >
-              <div className="flex items-center justify-between gap-3">
-                <Label className="text-sm font-semibold">
-                  {translate(
-                    'auto.components.settings.RepositoryPane.e9bd57a336',
-                    'Worktree Location'
-                  )}
-                </Label>
-                {repo.worktreeBasePath ? (
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="sm"
-                    onClick={() => updateRepo(repo.id, { worktreeBasePath: undefined })}
-                  >
-                    {translate('auto.components.settings.RepositoryPane.8ccacbeb5a', 'Use Global')}
-                  </Button>
-                ) : null}
-              </div>
-              <RepoSettingsDraftInput
-                repoId={repo.id}
-                storeValue={repo.worktreeBasePath ?? ''}
-                placeholder={settings?.workspaceDir ?? ''}
-                onTextChange={(text) =>
-                  updateRepo(repo.id, { worktreeBasePath: text.trim() ? text : undefined })
-                }
-                className="h-9 text-sm"
-              />
-              <p className="text-xs text-muted-foreground">
-                {translate(
-                  'auto.components.settings.RepositoryPane.15a99d9b9f',
-                  'Relative paths resolve from this project root.'
-                )}
-              </p>
-            </SearchableSetting>
+            />
           </>
         ) : null}
       </section>
@@ -385,21 +375,20 @@ export function RepositoryPane({
       <RepositorySourceControlAiSection
         key="source-control-ai"
         repo={repo}
-        updateRepo={updateRepo}
+        updateRepo={updateSelectedRepo}
       />
     ) : null,
     !isFolder &&
     !repo.connectionId &&
-    symlinksEnabled &&
     (forceFullPaneForRepoMatch || matchesSettingsSearch(searchQuery, symlinkEntries)) ? (
-      <WorktreeSymlinksSection key="symlinks" repo={repo} updateRepo={updateRepo} />
+      <WorktreeSymlinksSection key="symlinks" repo={repo} updateRepo={updateSelectedRepo} />
     ) : null,
     !isFolder &&
     (forceFullPaneForRepoMatch || matchesSettingsSearch(searchQuery, sparsePresetEntries)) ? (
-      <SparsePresetSettingsSection key="sparse-presets" repoId={repo.id} />
+      <SparsePresetSettingsSection key={`sparse-presets:${repo.id}`} repoId={repo.id} />
     ) : null,
     !isFolder && (forceFullPaneForRepoMatch || matchesSettingsSearch(searchQuery, mcpEntries)) ? (
-      <McpConfigSection key="mcp-configs" repo={repo} />
+      <McpConfigSection key={`mcp-configs:${selectedHostId}:${repo.id}`} repo={repo} />
     ) : null
   ].filter(Boolean)
 

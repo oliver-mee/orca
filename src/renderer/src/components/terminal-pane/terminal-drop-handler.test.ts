@@ -1,25 +1,52 @@
+import { parseExecutionHostId } from '../../../../shared/execution-host'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-const mocks = vi.hoisted(() => ({
-  toastLoading: vi.fn(() => 'toast-1'),
-  toastDismiss: vi.fn(),
-  toastError: vi.fn(),
-  importExternalPathsToRuntime: vi.fn(),
-  recordTerminalUserInputForLeaf: vi.fn(),
-  storeState: {
-    settings: { activeRuntimeEnvironmentId: 'env-1' as string | null },
-    repos: [
-      {
-        id: 'repo1',
-        connectionId: null as string | null,
-        executionHostId: 'runtime:env-1' as string | null
-      }
-    ],
-    worktreesByRepo: {
-      repo1: [{ id: 'wt-1', repoId: 'repo1', path: '/remote/repo' }]
+const mocks = vi.hoisted(() => {
+  const worktreesByRepo: Record<
+    string,
+    { id: string; repoId: string; path: string; hostId?: string | null }[]
+  > = {
+    repo1: [{ id: 'wt-1', repoId: 'repo1', path: '/remote/repo', hostId: 'runtime:env-1' }]
+  }
+  return {
+    toastLoading: vi.fn(() => 'toast-1'),
+    toastDismiss: vi.fn(),
+    toastError: vi.fn(),
+    importExternalPathsToRuntime: vi.fn(),
+    resolveDroppedPathsForAgent: vi.fn(),
+    recordTerminalUserInputForLeaf: vi.fn(),
+    storeState: {
+      activeRepoId: 'repo1',
+      activeWorktreeId: 'wt-1',
+      settings: { activeRuntimeEnvironmentId: 'env-1' as string | null },
+      projects: [
+        {
+          id: 'repo1',
+          localWindowsRuntimePreference: { kind: 'inherit-global' as const }
+        }
+      ] as {
+        id: string
+        localWindowsRuntimePreference:
+          | { kind: 'inherit-global' }
+          | { kind: 'windows-host' }
+          | { kind: 'wsl'; distro: string | null }
+      }[],
+      repos: [
+        {
+          id: 'repo1',
+          connectionId: null as string | null,
+          path: '/remote/repo',
+          executionHostId: 'runtime:env-1' as string | null
+        }
+      ],
+      worktreesByRepo,
+      sshConnectionStates: new Map<
+        string,
+        { remotePlatform?: NodeJS.Platform; connectionGeneration?: number }
+      >()
     }
   }
-}))
+})
 
 vi.mock('sonner', () => ({
   toast: {
@@ -36,24 +63,70 @@ vi.mock('@/store', () => ({
   }
 }))
 
-vi.mock('@/runtime/runtime-file-client', () => ({
+vi.mock('@/runtime/runtime-file-import-client', () => ({
   importExternalPathsToRuntime: mocks.importExternalPathsToRuntime
+}))
+
+vi.mock('@/lib/new-workspace', () => ({
+  CLIENT_PLATFORM: 'win32'
 }))
 
 vi.mock('./terminal-input-activity', () => ({
   recordTerminalUserInputForLeaf: mocks.recordTerminalUserInputForLeaf
 }))
 
-import { handleTerminalFileDrop, resolveTerminalDropTargetShell } from './terminal-drop-handler'
+import { handleTerminalFileDrop } from './terminal-drop-handler'
+import { wrapTerminalBracketedPasteText } from './terminal-bracketed-paste'
+
+function createTerminalTransport(
+  sendInput: ReturnType<typeof vi.fn>,
+  ptyId = 'pty-1',
+  sendInputAccepted?: ReturnType<typeof vi.fn>
+) {
+  const host = parseExecutionHostId(mocks.storeState.repos[0]?.executionHostId)
+  return {
+    sendInput,
+    ...(sendInputAccepted ? { sendInputAccepted } : {}),
+    getPtyId: vi.fn(() => ptyId),
+    isConnected: vi.fn(() => true),
+    getExecutionHostId: () => (host?.kind === 'runtime' ? 'local' : (host?.id ?? 'local')),
+    getRuntimeEnvironmentId: () => (host?.kind === 'runtime' ? host.environmentId : null)
+  }
+}
 
 describe('handleTerminalFileDrop', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    mocks.storeState.activeRepoId = 'repo1'
+    mocks.storeState.activeWorktreeId = 'wt-1'
+    vi.stubGlobal('window', {
+      api: {
+        fs: {
+          resolveDroppedPathsForAgent: mocks.resolveDroppedPathsForAgent
+        }
+      }
+    })
     mocks.storeState.settings = { activeRuntimeEnvironmentId: 'env-1' }
-    mocks.storeState.repos = [{ id: 'repo1', connectionId: null, executionHostId: 'runtime:env-1' }]
+    mocks.storeState.projects = [
+      {
+        id: 'repo1',
+        localWindowsRuntimePreference: { kind: 'inherit-global' }
+      }
+    ]
+    mocks.storeState.repos = [
+      { id: 'repo1', connectionId: null, path: '/remote/repo', executionHostId: 'runtime:env-1' }
+    ]
     mocks.storeState.worktreesByRepo = {
-      repo1: [{ id: 'wt-1', repoId: 'repo1', path: '/remote/repo' }]
+      repo1: [
+        {
+          id: 'wt-1',
+          repoId: 'repo1',
+          path: '/remote/repo',
+          hostId: parseExecutionHostId(mocks.storeState.repos[0]?.executionHostId)?.id ?? 'local'
+        }
+      ]
     }
+    mocks.storeState.sshConnectionStates = new Map()
   })
 
   it('uploads client-local drops into the active runtime before pasting paths', async () => {
@@ -70,11 +143,9 @@ describe('handleTerminalFileDrop', () => {
     })
     const sendInput = vi.fn(() => true)
     const focus = vi.fn()
-    const manager = {
-      getActivePane: () => ({ id: 1, leafId: 'leaf-1', terminal: { focus } }),
-      getPanes: () => []
-    }
-    const paneTransports = new Map([[1, { sendInput }]])
+    const pane = { id: 1, leafId: 'leaf-1', terminal: { focus } }
+    const manager = { getActivePane: () => pane, getPanes: () => [pane] }
+    const paneTransports = new Map([[1, createTerminalTransport(sendInput)]])
 
     await handleTerminalFileDrop({
       manager: manager as never,
@@ -82,28 +153,82 @@ describe('handleTerminalFileDrop', () => {
       worktreeId: 'wt-1',
       tabId: 'tab-1',
       cwd: undefined,
-      data: { paths: ['/Users/me/logo.png'], target: 'terminal' }
+      pane,
+      paths: ['/Users/me/logo.png']
     })
 
     expect(mocks.importExternalPathsToRuntime).toHaveBeenCalledWith(
       {
-        settings: { activeRuntimeEnvironmentId: 'env-1' },
+        target: { kind: 'environment', environmentId: 'env-1' },
         worktreeId: 'wt-1',
-        worktreePath: '/remote/repo'
+        worktreePath: '/remote/repo',
+        expectedExecutionHostId: 'local',
+        expectedSshTargetId: undefined,
+        expectedSshConnectionGeneration: undefined
       },
       ['/Users/me/logo.png'],
-      '/remote/repo/.orca/drops'
+      '/remote/repo/.orca/drops',
+      { assertCurrent: expect.any(Function), nameExtensionlessImages: true }
     )
-    expect(sendInput).toHaveBeenCalledWith('/remote/repo/.orca/drops/logo.png ')
-    expect(focus).toHaveBeenCalled()
+    expect(sendInput).toHaveBeenCalledWith(
+      wrapTerminalBracketedPasteText('/remote/repo/.orca/drops/logo.png'),
+      'driving'
+    )
+    expect(focus).not.toHaveBeenCalled()
     expect(mocks.recordTerminalUserInputForLeaf).toHaveBeenCalledWith('tab-1', 'leaf-1')
     expect(mocks.toastError).not.toHaveBeenCalled()
     expect(mocks.toastDismiss).toHaveBeenCalledWith('toast-1')
   })
 
+  it('does not paste runtime-uploaded paths when the target PTY changed', async () => {
+    let ptyId = 'pty-1'
+    mocks.importExternalPathsToRuntime.mockImplementation(async () => {
+      ptyId = 'pty-2'
+      return {
+        results: [
+          {
+            sourcePath: '/Users/me/logo.png',
+            status: 'imported',
+            destPath: '/remote/repo/.orca/drops/logo.png',
+            kind: 'file',
+            renamed: false
+          }
+        ]
+      }
+    })
+    const sendInput = vi.fn(() => true)
+    const focus = vi.fn()
+    const pane = { id: 1, leafId: 'leaf-1', terminal: { focus } }
+    const manager = { getActivePane: () => pane, getPanes: () => [pane] }
+    const transport = createTerminalTransport(sendInput)
+    transport.getPtyId.mockImplementation(() => ptyId)
+
+    await handleTerminalFileDrop({
+      manager: manager as never,
+      paneTransports: new Map([[1, transport]]) as never,
+      worktreeId: 'wt-1',
+      tabId: 'tab-1',
+      cwd: undefined,
+      pane,
+      paths: ['/Users/me/logo.png']
+    })
+
+    expect(sendInput).not.toHaveBeenCalled()
+    expect(focus).not.toHaveBeenCalled()
+    expect(mocks.recordTerminalUserInputForLeaf).not.toHaveBeenCalled()
+    expect(mocks.toastDismiss).toHaveBeenCalledWith('toast-1')
+  })
+
   it('uses Windows shell paths for forward-slash UNC runtime worktrees', async () => {
     mocks.storeState.worktreesByRepo = {
-      repo1: [{ id: 'wt-1', repoId: 'repo1', path: '//server/share/repo' }]
+      repo1: [
+        {
+          id: 'wt-1',
+          repoId: 'repo1',
+          path: '//server/share/repo',
+          hostId: parseExecutionHostId(mocks.storeState.repos[0]?.executionHostId)?.id ?? 'local'
+        }
+      ]
     }
     mocks.importExternalPathsToRuntime.mockResolvedValue({
       results: [
@@ -118,11 +243,12 @@ describe('handleTerminalFileDrop', () => {
     })
     const sendInput = vi.fn(() => true)
     const focus = vi.fn()
+    const pane = { id: 1, leafId: 'leaf-1', terminal: { focus } }
     const manager = {
-      getActivePane: () => ({ id: 1, leafId: 'leaf-1', terminal: { focus } }),
-      getPanes: () => []
+      getActivePane: () => pane,
+      getPanes: () => [pane]
     }
-    const paneTransports = new Map([[1, { sendInput }]])
+    const paneTransports = new Map([[1, createTerminalTransport(sendInput)]])
 
     await handleTerminalFileDrop({
       manager: manager as never,
@@ -130,26 +256,44 @@ describe('handleTerminalFileDrop', () => {
       worktreeId: 'wt-1',
       tabId: 'tab-1',
       cwd: undefined,
-      data: { paths: ['/Users/me/logo.png'], target: 'terminal' }
+      pane,
+      paths: ['/Users/me/logo.png']
     })
 
     expect(mocks.importExternalPathsToRuntime).toHaveBeenCalledWith(
       {
-        settings: { activeRuntimeEnvironmentId: 'env-1' },
+        target: { kind: 'environment', environmentId: 'env-1' },
         worktreeId: 'wt-1',
-        worktreePath: '//server/share/repo'
+        worktreePath: '//server/share/repo',
+        expectedExecutionHostId: 'local',
+        expectedSshTargetId: undefined,
+        expectedSshConnectionGeneration: undefined
       },
       ['/Users/me/logo.png'],
-      '\\\\server\\share\\repo\\.orca\\drops'
+      '\\\\server\\share\\repo\\.orca\\drops',
+      { assertCurrent: expect.any(Function), nameExtensionlessImages: true }
     )
-    expect(sendInput).toHaveBeenCalledWith('\\\\server\\share\\repo\\.orca\\drops\\logo.png ')
+    expect(sendInput).toHaveBeenCalledWith(
+      wrapTerminalBracketedPasteText('\\\\server\\share\\repo\\.orca\\drops\\logo.png'),
+      'driving'
+    )
   })
 
   it('uploads to the worktree owner runtime instead of the focused runtime', async () => {
     mocks.storeState.settings = { activeRuntimeEnvironmentId: 'focused-runtime' }
     mocks.storeState.repos = [
-      { id: 'repo1', connectionId: null, executionHostId: 'runtime:owner-runtime' }
+      {
+        id: 'repo1',
+        connectionId: null,
+        path: '/remote/repo',
+        executionHostId: 'runtime:owner-runtime'
+      }
     ]
+    mocks.storeState.worktreesByRepo = {
+      repo1: [
+        { id: 'wt-1', repoId: 'repo1', path: '/remote/repo', hostId: 'runtime:owner-runtime' }
+      ]
+    }
     mocks.importExternalPathsToRuntime.mockResolvedValue({
       results: [
         {
@@ -163,11 +307,12 @@ describe('handleTerminalFileDrop', () => {
     })
     const sendInput = vi.fn(() => true)
     const focus = vi.fn()
+    const pane = { id: 1, leafId: 'leaf-1', terminal: { focus } }
     const manager = {
-      getActivePane: () => ({ id: 1, leafId: 'leaf-1', terminal: { focus } }),
-      getPanes: () => []
+      getActivePane: () => pane,
+      getPanes: () => [pane]
     }
-    const paneTransports = new Map([[1, { sendInput }]])
+    const paneTransports = new Map([[1, createTerminalTransport(sendInput)]])
 
     await handleTerminalFileDrop({
       manager: manager as never,
@@ -175,31 +320,42 @@ describe('handleTerminalFileDrop', () => {
       worktreeId: 'wt-1',
       tabId: 'tab-1',
       cwd: undefined,
-      data: { paths: ['/Users/me/spec.pdf'], target: 'terminal' }
+      pane,
+      paths: ['/Users/me/spec.pdf']
     })
 
     expect(mocks.importExternalPathsToRuntime).toHaveBeenCalledWith(
       {
-        settings: { activeRuntimeEnvironmentId: 'owner-runtime' },
+        target: { kind: 'environment', environmentId: 'owner-runtime' },
         worktreeId: 'wt-1',
-        worktreePath: '/remote/repo'
+        worktreePath: '/remote/repo',
+        expectedExecutionHostId: 'local',
+        expectedSshTargetId: undefined,
+        expectedSshConnectionGeneration: undefined
       },
       ['/Users/me/spec.pdf'],
-      '/remote/repo/.orca/drops'
+      '/remote/repo/.orca/drops',
+      { assertCurrent: expect.any(Function), nameExtensionlessImages: true }
     )
-    expect(sendInput).toHaveBeenCalledWith('/remote/repo/.orca/drops/spec.pdf ')
+    expect(sendInput).toHaveBeenCalledWith('/remote/repo/.orca/drops/spec.pdf ', 'driving')
   })
 
   it('keeps explicit local worktree drops local while a runtime is focused', async () => {
     mocks.storeState.settings = { activeRuntimeEnvironmentId: 'focused-runtime' }
-    mocks.storeState.repos = [{ id: 'repo1', connectionId: null, executionHostId: 'local' }]
+    mocks.storeState.repos = [
+      { id: 'repo1', connectionId: null, path: '/remote/repo', executionHostId: 'local' }
+    ]
+    mocks.storeState.worktreesByRepo = {
+      repo1: [{ id: 'wt-1', repoId: 'repo1', path: '/remote/repo', hostId: 'local' }]
+    }
     const sendInput = vi.fn(() => true)
     const focus = vi.fn()
+    const pane = { id: 1, leafId: 'leaf-1', terminal: { focus } }
     const manager = {
-      getActivePane: () => ({ id: 1, leafId: 'leaf-1', terminal: { focus } }),
-      getPanes: () => []
+      getActivePane: () => pane,
+      getPanes: () => [pane]
     }
-    const paneTransports = new Map([[1, { sendInput }]])
+    const paneTransports = new Map([[1, createTerminalTransport(sendInput)]])
 
     await handleTerminalFileDrop({
       manager: manager as never,
@@ -207,46 +363,386 @@ describe('handleTerminalFileDrop', () => {
       worktreeId: 'wt-1',
       tabId: 'tab-1',
       cwd: undefined,
-      data: { paths: ['/Users/me/spec.pdf'], target: 'terminal' }
+      pane,
+      paths: ['/Users/me/spec.pdf']
     })
 
     expect(mocks.importExternalPathsToRuntime).not.toHaveBeenCalled()
-    expect(sendInput).toHaveBeenCalledWith('/Users/me/spec.pdf ')
-    expect(focus).toHaveBeenCalled()
+    expect(sendInput).toHaveBeenCalledWith('/Users/me/spec.pdf ', 'driving')
+    expect(focus).not.toHaveBeenCalled()
   })
-})
 
-describe('resolveTerminalDropTargetShell', () => {
-  it('uses runtime worktree path shape for active Windows runtimes', () => {
-    expect(
-      resolveTerminalDropTargetShell({
-        activeRuntimeEnvironmentId: 'env-1',
-        worktreePath: '//Server/Share/Repo',
+  it('pastes Linux-readable paths for local Windows-path projects forced to WSL', async () => {
+    mocks.storeState.settings = { activeRuntimeEnvironmentId: 'focused-runtime' }
+    mocks.storeState.projects = [
+      {
+        id: 'repo1',
+        localWindowsRuntimePreference: { kind: 'wsl', distro: 'Ubuntu' }
+      }
+    ]
+    mocks.storeState.repos = [
+      {
+        id: 'repo1',
         connectionId: null,
-        userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)'
-      })
-    ).toBe('windows')
+        path: 'C:\\Users\\alice\\repo',
+        executionHostId: 'local'
+      }
+    ]
+    mocks.storeState.worktreesByRepo = {
+      repo1: [
+        {
+          id: 'wt-1',
+          repoId: 'repo1',
+          path: 'C:\\Users\\alice\\repo\\feature',
+          hostId: parseExecutionHostId(mocks.storeState.repos[0]?.executionHostId)?.id ?? 'local'
+        }
+      ]
+    }
+    const sendInput = vi.fn(() => true)
+    const focus = vi.fn()
+    const pane = { id: 1, leafId: 'leaf-1', terminal: { focus } }
+    const manager = {
+      getActivePane: () => pane,
+      getPanes: () => [pane]
+    }
+    const paneTransports = new Map([[1, createTerminalTransport(sendInput)]])
+
+    await handleTerminalFileDrop({
+      manager: manager as never,
+      paneTransports: paneTransports as never,
+      worktreeId: 'wt-1',
+      tabId: 'tab-1',
+      cwd: undefined,
+      pane,
+      paths: [
+        'C:\\Users\\alice\\Desktop\\notes one.txt',
+        '\\\\wsl.localhost\\Ubuntu\\home\\alice\\repo\\README.md'
+      ]
+    })
+
+    expect(mocks.importExternalPathsToRuntime).not.toHaveBeenCalled()
+    expect(sendInput).toHaveBeenNthCalledWith(
+      1,
+      "'/mnt/c/Users/alice/Desktop/notes one.txt' ",
+      'driving'
+    )
+    expect(sendInput).toHaveBeenNthCalledWith(2, '/home/alice/repo/README.md ', 'driving')
+    expect(mocks.recordTerminalUserInputForLeaf).toHaveBeenCalledWith('tab-1', 'leaf-1')
   })
 
-  it('uses runtime worktree path shape for active POSIX runtimes', () => {
-    expect(
-      resolveTerminalDropTargetShell({
-        activeRuntimeEnvironmentId: 'env-1',
-        worktreePath: '/home/orca/repo',
-        connectionId: null,
-        userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'
-      })
-    ).toBe('posix')
+  it('pastes a spaced image from a Windows-path project forced to WSL with POSIX escaping', async () => {
+    mocks.storeState.settings = { activeRuntimeEnvironmentId: null }
+    mocks.storeState.projects = [
+      { id: 'repo1', localWindowsRuntimePreference: { kind: 'wsl', distro: 'Ubuntu' } }
+    ]
+    mocks.storeState.repos = [
+      { id: 'repo1', connectionId: null, path: 'C:\\Users\\alice\\repo', executionHostId: 'local' }
+    ]
+    mocks.storeState.worktreesByRepo = {
+      repo1: [
+        {
+          id: 'wt-1',
+          repoId: 'repo1',
+          path: 'C:\\Users\\alice\\repo',
+          hostId: parseExecutionHostId(mocks.storeState.repos[0]?.executionHostId)?.id ?? 'local'
+        }
+      ]
+    }
+    const sendInput = vi.fn(() => true)
+    const pane = { id: 1, leafId: 'leaf-1', terminal: { focus: vi.fn() } }
+
+    await handleTerminalFileDrop({
+      manager: { getActivePane: () => pane, getPanes: () => [pane] } as never,
+      paneTransports: new Map([[1, createTerminalTransport(sendInput)]]) as never,
+      worktreeId: 'wt-1',
+      tabId: 'tab-1',
+      cwd: undefined,
+      pane,
+      paths: ['C:\\Users\\alice\\Desktop\\Screenshot 1.png']
+    })
+
+    // Why: the agent runs in Linux, so a Windows-style quote would reach it as a literal.
+    expect(sendInput).toHaveBeenCalledWith(
+      wrapTerminalBracketedPasteText('/mnt/c/Users/alice/Desktop/Screenshot\\ 1.png'),
+      'driving'
+    )
   })
 
-  it('keeps legacy SSH drops POSIX when no runtime environment is active', () => {
-    expect(
-      resolveTerminalDropTargetShell({
-        activeRuntimeEnvironmentId: null,
-        worktreePath: 'C:\\repo',
-        connectionId: 'ssh-1',
-        userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'
+  it('uses acknowledged PTY writes for native local drops when available', async () => {
+    mocks.storeState.settings = { activeRuntimeEnvironmentId: 'focused-runtime' }
+    mocks.storeState.repos = [
+      { id: 'repo1', connectionId: null, path: '/repo', executionHostId: 'local' }
+    ]
+    mocks.storeState.worktreesByRepo = {
+      repo1: [{ id: 'wt-1', repoId: 'repo1', path: '/repo', hostId: 'local' }]
+    }
+    const sendInput = vi.fn(() => true)
+    const sendInputAccepted = vi.fn(async () => true)
+    const focus = vi.fn()
+    const pane = { id: 1, leafId: 'leaf-1', terminal: { focus } }
+    const manager = {
+      getActivePane: () => pane,
+      getPanes: () => [pane]
+    }
+    const paneTransports = new Map([
+      [1, createTerminalTransport(sendInput, 'pty-1', sendInputAccepted)]
+    ])
+
+    await handleTerminalFileDrop({
+      manager: manager as never,
+      paneTransports: paneTransports as never,
+      worktreeId: 'wt-1',
+      tabId: 'tab-1',
+      cwd: undefined,
+      pane,
+      paths: ['/Users/me/spec.pdf']
+    })
+
+    expect(sendInputAccepted).toHaveBeenCalledWith('/Users/me/spec.pdf ', 'driving', {
+      signal: expect.any(AbortSignal)
+    })
+    expect(sendInput).not.toHaveBeenCalled()
+    expect(focus).not.toHaveBeenCalled()
+    expect(mocks.recordTerminalUserInputForLeaf).toHaveBeenCalledWith('tab-1', 'leaf-1')
+  })
+
+  it('pastes native file drops into the pane captured by its element', async () => {
+    mocks.storeState.settings = { activeRuntimeEnvironmentId: 'focused-runtime' }
+    mocks.storeState.repos = [
+      { id: 'repo1', connectionId: null, path: '/repo', executionHostId: 'local' }
+    ]
+    mocks.storeState.worktreesByRepo = {
+      repo1: [
+        {
+          id: 'wt-1',
+          repoId: 'repo1',
+          path: '/repo',
+          hostId: parseExecutionHostId(mocks.storeState.repos[0]?.executionHostId)?.id ?? 'local'
+        }
+      ]
+    }
+    const activeSendInput = vi.fn(() => true)
+    const targetSendInput = vi.fn(() => true)
+    const activeFocus = vi.fn()
+    const targetFocus = vi.fn()
+    const activePane = { id: 1, leafId: 'leaf-active', terminal: { focus: activeFocus } }
+    const targetPane = { id: 2, leafId: 'leaf-target', terminal: { focus: targetFocus } }
+    const manager = {
+      getActivePane: () => activePane,
+      getPanes: () => [activePane, targetPane]
+    }
+
+    await handleTerminalFileDrop({
+      manager: manager as never,
+      paneTransports: new Map([
+        [1, createTerminalTransport(activeSendInput)],
+        [2, createTerminalTransport(targetSendInput)]
+      ]) as never,
+      worktreeId: 'wt-1',
+      tabId: 'tab-1',
+      cwd: undefined,
+      pane: targetPane,
+      paths: ['/Users/me/spec.pdf']
+    })
+
+    expect(activeSendInput).not.toHaveBeenCalled()
+    expect(activeFocus).not.toHaveBeenCalled()
+    expect(targetSendInput).toHaveBeenCalledWith('/Users/me/spec.pdf ', 'driving')
+    expect(targetFocus).not.toHaveBeenCalled()
+    expect(mocks.recordTerminalUserInputForLeaf).toHaveBeenCalledWith('tab-1', 'leaf-target')
+  })
+
+  it('resolves local WSL drops through the target distro before pasting POSIX paths', async () => {
+    mocks.storeState.settings = { activeRuntimeEnvironmentId: 'focused-runtime' }
+    mocks.storeState.repos = [
+      { id: 'repo1', connectionId: null, path: '/repo', executionHostId: 'local' }
+    ]
+    mocks.storeState.worktreesByRepo = {
+      repo1: [
+        {
+          id: 'wt-1',
+          repoId: 'repo1',
+          path: '\\\\wsl.localhost\\Ubuntu-24.04\\home\\user\\repo'
+        }
+      ]
+    }
+    mocks.resolveDroppedPathsForAgent.mockResolvedValue({
+      failed: [],
+      resolvedPaths: ['/mnt/c/Users/Name/My Project/file.txt', '/home/user/repo/README.md'],
+      skipped: []
+    })
+    const sendInput = vi.fn(() => true)
+    const focus = vi.fn()
+    const pane = { id: 1, leafId: 'leaf-1', terminal: { focus } }
+    const manager = {
+      getActivePane: () => pane,
+      getPanes: () => [pane]
+    }
+    const paneTransports = new Map([[1, createTerminalTransport(sendInput)]])
+
+    await handleTerminalFileDrop({
+      manager: manager as never,
+      paneTransports: paneTransports as never,
+      worktreeId: 'wt-1',
+      tabId: 'tab-1',
+      cwd: undefined,
+      pane,
+      paths: [
+        'C:\\Users\\Name\\My Project\\file.txt',
+        '\\\\wsl.localhost\\Ubuntu-24.04\\home\\user\\repo\\README.md'
+      ]
+    })
+
+    expect(mocks.resolveDroppedPathsForAgent).toHaveBeenCalledWith({
+      paths: [
+        'C:\\Users\\Name\\My Project\\file.txt',
+        '\\\\wsl.localhost\\Ubuntu-24.04\\home\\user\\repo\\README.md'
+      ],
+      worktreePath: '\\\\wsl.localhost\\Ubuntu-24.04\\home\\user\\repo'
+    })
+    expect(sendInput.mock.calls).toEqual([
+      ["'/mnt/c/Users/Name/My Project/file.txt' ", 'driving'],
+      ['/home/user/repo/README.md ', 'driving']
+    ])
+    expect(focus).not.toHaveBeenCalled()
+    expect(mocks.recordTerminalUserInputForLeaf).toHaveBeenCalledWith('tab-1', 'leaf-1')
+  })
+
+  it('does not paste local WSL resolved paths when the target PTY changed', async () => {
+    mocks.storeState.settings = { activeRuntimeEnvironmentId: 'focused-runtime' }
+    mocks.storeState.repos = [
+      { id: 'repo1', connectionId: null, path: '/repo', executionHostId: 'local' }
+    ]
+    mocks.storeState.worktreesByRepo = {
+      repo1: [
+        {
+          id: 'wt-1',
+          repoId: 'repo1',
+          path: '\\\\wsl.localhost\\Ubuntu-24.04\\home\\user\\repo'
+        }
+      ]
+    }
+    let ptyId = 'pty-1'
+    mocks.resolveDroppedPathsForAgent.mockImplementation(async () => {
+      ptyId = 'pty-2'
+      return {
+        failed: [],
+        resolvedPaths: ['/mnt/c/Users/Name/My Project/file.txt'],
+        skipped: []
+      }
+    })
+    const sendInput = vi.fn(() => true)
+    const focus = vi.fn()
+    const pane = { id: 1, leafId: 'leaf-1', terminal: { focus } }
+    const manager = {
+      getActivePane: () => pane,
+      getPanes: () => [pane]
+    }
+    const transport = createTerminalTransport(sendInput)
+    transport.getPtyId.mockImplementation(() => ptyId)
+
+    await handleTerminalFileDrop({
+      manager: manager as never,
+      paneTransports: new Map([[1, transport]]) as never,
+      worktreeId: 'wt-1',
+      tabId: 'tab-1',
+      cwd: undefined,
+      pane,
+      paths: ['C:\\Users\\Name\\My Project\\file.txt']
+    })
+
+    expect(sendInput).not.toHaveBeenCalled()
+    expect(focus).not.toHaveBeenCalled()
+    expect(mocks.recordTerminalUserInputForLeaf).not.toHaveBeenCalled()
+  })
+
+  it('surfaces stale SSH owner capture failures without rejecting the native drop', async () => {
+    mocks.storeState.settings = { activeRuntimeEnvironmentId: null }
+    mocks.storeState.repos = [
+      {
+        id: 'repo1',
+        connectionId: 'ssh-stale',
+        path: '/remote/repo',
+        executionHostId: 'ssh:ssh-stale'
+      }
+    ]
+    mocks.storeState.worktreesByRepo = {
+      repo1: [
+        {
+          id: 'wt-1',
+          repoId: 'repo1',
+          path: '/remote/repo',
+          hostId: parseExecutionHostId(mocks.storeState.repos[0]?.executionHostId)?.id ?? 'local'
+        }
+      ]
+    }
+    mocks.storeState.sshConnectionStates = new Map([['ssh-stale', { remotePlatform: 'linux' }]])
+    const pane = { id: 1, leafId: 'leaf-1', terminal: { focus: vi.fn() } }
+
+    await expect(
+      handleTerminalFileDrop({
+        manager: { getActivePane: () => pane, getPanes: () => [pane] } as never,
+        paneTransports: new Map([[1, createTerminalTransport(vi.fn(() => true))]]) as never,
+        worktreeId: 'wt-1',
+        tabId: 'tab-1',
+        cwd: undefined,
+        pane,
+        paths: ['/local/a.txt']
       })
-    ).toBe('posix')
+    ).resolves.toBeUndefined()
+
+    expect(mocks.toastError).toHaveBeenCalledWith(
+      "Couldn't verify the SSH connection. Reconnect the host and try again."
+    )
+    expect(mocks.resolveDroppedPathsForAgent).not.toHaveBeenCalled()
+  })
+
+  it('keeps SSH Linux path drops on POSIX shell escaping', async () => {
+    mocks.storeState.settings = { activeRuntimeEnvironmentId: null }
+    mocks.storeState.repos = [
+      {
+        id: 'repo1',
+        connectionId: 'ssh-linux',
+        path: '/remote/repo',
+        executionHostId: 'ssh:ssh-linux'
+      }
+    ]
+    mocks.storeState.worktreesByRepo = {
+      repo1: [
+        {
+          id: 'wt-1',
+          repoId: 'repo1',
+          path: '/remote/repo',
+          hostId: parseExecutionHostId(mocks.storeState.repos[0]?.executionHostId)?.id ?? 'local'
+        }
+      ]
+    }
+    mocks.storeState.sshConnectionStates = new Map([
+      ['ssh-linux', { remotePlatform: 'linux', connectionGeneration: 5 }]
+    ])
+    mocks.resolveDroppedPathsForAgent.mockResolvedValue({
+      failed: [],
+      resolvedPaths: ["/remote/repo/it's here.txt"],
+      skipped: []
+    })
+    const sendInput = vi.fn(() => true)
+    const focus = vi.fn()
+    const pane = { id: 1, leafId: 'leaf-1', terminal: { focus } }
+    const manager = {
+      getActivePane: () => pane,
+      getPanes: () => [pane]
+    }
+
+    await handleTerminalFileDrop({
+      manager: manager as never,
+      paneTransports: new Map([[1, createTerminalTransport(sendInput)]]) as never,
+      worktreeId: 'wt-1',
+      tabId: 'tab-1',
+      cwd: undefined,
+      pane,
+      paths: ["/Users/me/it's here.txt"]
+    })
+
+    expect(sendInput).toHaveBeenCalledWith("'/remote/repo/it'\\''s here.txt' ", 'driving')
   })
 })

@@ -1,47 +1,16 @@
-import type { RpcClient } from '../transport/rpc-client'
-import { isMobileGitUnavailable } from './mobile-git-status'
-
-type RuntimeRepoSummary = {
-  id: string
-  worktreeBaseRef?: string | null
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null
-}
+import { refusedRpcMessageOrFallback } from '../transport/rpc-refusal-message'
+import { isMobileGitUnavailableReply } from './mobile-git-status'
+import { repoBaseRefListRead, repoDefaultBaseRefRead } from './mobile-repo-base-ref-operations'
+import type { RpcOperationSender } from '../transport/rpc-operation-sender'
+import { worktreeSummaryRead } from './mobile-worktree-metadata-operations'
 
 function getRepoIdFromMobileWorktreeId(id: string): string {
   const separatorIdx = id.indexOf('::')
   return separatorIdx === -1 ? id : id.slice(0, separatorIdx)
 }
 
-function readRepoSummaries(value: unknown): RuntimeRepoSummary[] {
-  if (!isRecord(value) || !Array.isArray(value.repos)) {
-    return []
-  }
-  return value.repos.flatMap((candidate): RuntimeRepoSummary[] => {
-    if (!isRecord(candidate) || typeof candidate.id !== 'string') {
-      return []
-    }
-    return [
-      {
-        id: candidate.id,
-        worktreeBaseRef:
-          typeof candidate.worktreeBaseRef === 'string' ? candidate.worktreeBaseRef : null
-      }
-    ]
-  })
-}
-
-function readDefaultBaseRef(value: unknown): string | null {
-  if (!isRecord(value)) {
-    return null
-  }
-  return typeof value.defaultBaseRef === 'string' ? value.defaultBaseRef.trim() || null : null
-}
-
 export async function resolveMobileBranchCompareBaseRef(
-  client: RpcClient,
+  client: RpcOperationSender,
   worktreeId: string
 ): Promise<string | null> {
   const repoId = getRepoIdFromMobileWorktreeId(worktreeId)
@@ -49,23 +18,36 @@ export async function resolveMobileBranchCompareBaseRef(
     return null
   }
 
-  let repoBaseRef: string | null = null
-  const repoResponse = await client.sendRequest('repo.list')
-  if (repoResponse.ok) {
-    const repo = readRepoSummaries(repoResponse.result).find((candidate) => candidate.id === repoId)
-    repoBaseRef = repo?.worktreeBaseRef?.trim() || null
-  }
-
-  if (repoBaseRef) {
-    return repoBaseRef
-  }
-
-  const defaultResponse = await client.sendRequest('repo.baseRefDefault', { repo: `id:${repoId}` })
-  if (!defaultResponse.ok) {
-    if (isMobileGitUnavailable(defaultResponse.error?.code, defaultResponse.error?.message)) {
-      return null
+  const [worktreeReply, repoReply] = await Promise.all([
+    worktreeSummaryRead.request(client, { worktree: `id:${worktreeId}` }).catch(() => null),
+    repoBaseRefListRead.request(client).catch(() => null)
+  ])
+  const worktreeSummary = worktreeReply && worktreeSummaryRead.interpret(worktreeReply)
+  if (worktreeSummary?.accepted) {
+    const worktreeBaseRef = worktreeSummary.value?.baseRef?.trim() || null
+    if (worktreeBaseRef) {
+      return worktreeBaseRef
     }
-    throw new Error(defaultResponse.error?.message || 'Unable to resolve branch base')
   }
-  return readDefaultBaseRef(defaultResponse.result)
+
+  const repos = repoReply && repoBaseRefListRead.interpret(repoReply)
+  if (repos?.accepted) {
+    const repo = repos.value.find((candidate) => candidate.id === repoId)
+    const repoBaseRef = repo?.worktreeBaseRef?.trim() || null
+    if (repoBaseRef) {
+      return repoBaseRef
+    }
+  }
+
+  const defaultReply = await repoDefaultBaseRefRead.request(client, { repo: `id:${repoId}` })
+  // Why the raw refusal: a host that does not offer git to mobile is a capability gap to degrade
+  // on, not an error to surface, and no acceptance policy carries the code and message through.
+  if (isMobileGitUnavailableReply(defaultReply)) {
+    return null
+  }
+  try {
+    return repoDefaultBaseRefRead.interpret(defaultReply)
+  } catch (error) {
+    throw new Error(refusedRpcMessageOrFallback(error, 'Unable to resolve branch base'))
+  }
 }

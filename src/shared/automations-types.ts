@@ -1,4 +1,5 @@
-import type { TuiAgent } from './types'
+import type { TuiAgent } from './tui-agent'
+import type { SetupDecision } from './worktree/create-types'
 import type { TaskSourceContext, WorkspaceRunContext } from './task-source-context'
 
 export type AutomationWorkspaceMode = 'existing' | 'new_per_run'
@@ -18,7 +19,7 @@ export type AutomationRunStatus =
 export type AutomationRunTrigger = 'scheduled' | 'manual' | 'webhook'
 
 /** How an incoming webhook request is authenticated before it may trigger the
- *  automation. Provider-agnostic on purpose (issue #2): 'token' covers
+ *  automation. Provider-agnostic on purpose (issue #12400): 'token' covers
  *  GitLab's plain `X-Gitlab-Token` shared-secret header, 'hmac_sha256' covers
  *  GitHub's `X-Hub-Signature-256` and Gitea's `X-Gitea-Signature` body
  *  signatures, and 'none' leaves the URL's unguessable id as the only secret. */
@@ -51,6 +52,18 @@ export type AutomationWebhookDelivery = {
   contentType: string | null
   truncated: boolean
   receivedAt: number
+}
+
+/** Statuses a run can never leave; only these are safe to evict from history. */
+export function isFinalAutomationRunStatus(status: AutomationRunStatus): boolean {
+  return (
+    status === 'completed' ||
+    status === 'dispatch_failed' ||
+    status === 'skipped_precheck' ||
+    status === 'skipped_missed' ||
+    status === 'skipped_unavailable' ||
+    status === 'skipped_needs_interactive_auth'
+  )
 }
 
 export type AutomationSchedulePreset = 'hourly' | 'daily' | 'weekdays' | 'weekly' | 'custom'
@@ -113,10 +126,14 @@ export type AutomationPrecheckResult = {
 
 export type Automation = {
   id: string
+  /** Optional client request key used to make cross-authority creates retry-safe. */
+  creationKey?: string
   name: string
   prompt: string
   precheck: AutomationPrecheck | null
   agentId: TuiAgent
+  /** Saved text appended to the host's default agent Arguments on each fresh run; absent means none. */
+  extraAgentArgs?: string
   /** Why: runContext carries the logical project + host setup identity for
    *  multi-host projects; projectId remains only as the legacy repo-id storage
    *  field for pre-host-context automations.
@@ -131,10 +148,15 @@ export type Automation = {
   projectId: string
   executionTargetType: AutomationExecutionTargetType
   executionTargetId: string
+  /** Why: pins the SSH registration incarnation this record was attached to, so a
+   *  removed-and-re-added target reusing the id can't silently adopt it. Absent on
+   *  local records, on legacy records, and on orphans whose target is gone. */
+  executionTargetGeneration?: number
   schedulerOwner: AutomationSchedulerOwner
   workspaceMode: AutomationWorkspaceMode
   workspaceId: string | null
   baseBranch: string | null
+  setupDecision?: SetupDecision
   reuseSession: boolean
   timezone: string
   rrule: string
@@ -166,6 +188,10 @@ export type AutomationRun = {
   sessionKind: 'terminal'
   chatSessionId: string | null
   terminalSessionId: string | null
+  /** Why: a terminal tab can later point at a different pane/PTY. Automation
+   *  run reopening must target the pane that actually executed the run. */
+  terminalPaneKey: string | null
+  terminalPtyId: string | null
   outputSnapshot: AutomationRunOutputSnapshot | null
   precheckResult: AutomationPrecheckResult | null
   usage: AutomationRunUsage | null
@@ -176,13 +202,32 @@ export type AutomationRun = {
   startedAt: number | null
   dispatchedAt: number | null
   createdAt: number
+  /** Why: run titles must stay unique once retention prunes old runs, so the
+   *  number can no longer be derived from how many runs are currently kept. */
+  runNumber?: number
+  /** Why: a target that cannot resolve refuses every occurrence, so consecutive
+   *  identical refusals fold into this record instead of one row each. Counts the
+   *  occurrences the record stands for; absent means one. */
+  occurrenceCount?: number
+  /** `scheduledFor` of the most recently folded occurrence; absent until one folds. */
+  lastOccurrenceAt?: number
+}
+
+/** A bounded history response; older hosts may continue returning `runs` only. */
+export type AutomationRunsPage = {
+  runs: AutomationRun[]
+  nextCursor: string | null
 }
 
 export type AutomationCreateInput = {
+  /** Optional idempotency key; repeated creates return the original record. */
+  creationKey?: string
   name: string
   prompt: string
   precheck?: AutomationPrecheck | null
   agentId: TuiAgent
+  /** Empty or whitespace means no extras. */
+  extraAgentArgs?: string
   runContext?: WorkspaceRunContext | null
   sourceContext?: TaskSourceContext | null
   /** @deprecated Legacy repo-id compatibility field required for older stored
@@ -191,6 +236,7 @@ export type AutomationCreateInput = {
   workspaceMode: AutomationWorkspaceMode
   workspaceId?: string | null
   baseBranch?: string | null
+  setupDecision?: SetupDecision
   reuseSession?: boolean
   timezone: string
   rrule: string
@@ -207,12 +253,14 @@ export type AutomationUpdateInput = Partial<
     | 'prompt'
     | 'precheck'
     | 'agentId'
+    | 'extraAgentArgs'
     | 'runContext'
     | 'sourceContext'
     | 'projectId'
     | 'workspaceMode'
     | 'workspaceId'
     | 'baseBranch'
+    | 'setupDecision'
     | 'reuseSession'
     | 'timezone'
     | 'rrule'
@@ -226,6 +274,7 @@ export type AutomationUpdateInput = Partial<
 export type AutomationDispatchRequest = {
   automation: Automation
   run: AutomationRun
+  dispatchToken: string
 }
 
 export type AutomationDispatchResult = {
@@ -234,13 +283,17 @@ export type AutomationDispatchResult = {
   workspaceId?: string | null
   workspaceDisplayName?: string | null
   terminalSessionId?: string | null
+  terminalPaneKey?: string | null
+  terminalPtyId?: string | null
   outputSnapshot?: AutomationRunOutputSnapshot | null
   precheckResult?: AutomationPrecheckResult | null
   usage?: AutomationRunUsage | null
   error?: string | null
+  /** With `dispatched`: when the agent was handed the run, if not now. */
+  dispatchedAt?: number
 }
 
-export type ExternalAutomationProvider = 'hermes' | 'openclaw'
+export type ExternalAutomationProvider = 'openclaw'
 export type ExternalAutomationManagerStatus = 'available' | 'unavailable'
 export type ExternalAutomationAction = 'pause' | 'resume' | 'run' | 'delete'
 export type ExternalAutomationRunStatus = 'completed' | 'failed' | 'unknown'
@@ -271,6 +324,7 @@ export type ExternalAutomationJob = {
   lastError: string | null
   workdir: string | null
   runCount: number
+  runCountSaturated?: true
   runs: ExternalAutomationRun[]
 }
 
@@ -285,40 +339,6 @@ export type ExternalAutomationRun = {
   outputContent: string | null
   error: string | null
   outputPath: string | null
-}
-
-export type ExternalAutomationRunsPage = {
-  managerId: string
-  provider: ExternalAutomationProvider
-  target: ExternalAutomationTarget
-  jobId: string
-  page: number
-  pageSize: number
-  total: number
-  runs: ExternalAutomationRun[]
-}
-
-export type ExternalAutomationRunsInput = {
-  managerId: string
-  provider: ExternalAutomationProvider
-  target: ExternalAutomationTarget
-  jobId: string
-  page: number
-  pageSize: number
-}
-
-export type ExternalAutomationCreateInput = {
-  managerId: string
-  provider: ExternalAutomationProvider
-  target: ExternalAutomationTarget
-  name: string
-  prompt: string
-  schedule: string
-  workdir: string | null
-}
-
-export type ExternalAutomationUpdateInput = ExternalAutomationCreateInput & {
-  jobId: string
 }
 
 export type ExternalAutomationManager = {

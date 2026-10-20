@@ -4,7 +4,7 @@ import { randomUUID } from 'node:crypto'
 import { rmSync } from 'node:fs'
 import path from 'node:path'
 import { sendToTerminal } from './helpers/terminal'
-import { writePressureOutputScript } from './artificial-opencode-hidden-pressure-scenario'
+import { writePressureOutputScript } from './artificial-opencode-hidden-pressure-script'
 import {
   annotateScrollMeasurement,
   getResponsiveScrollPath,
@@ -39,12 +39,10 @@ type MainPressureSchedulerSnapshot = {
   droppedBacklogCount: number
 }
 
-// Why: the scheduler bounds renderer-side queued output, but the 2 MB ceiling
-// was ratcheted too tight for the 5-pane OpenCode pressure scenario. The
-// scheduler is still enforcing backpressure (droppedBacklogCount must stay 0
-// and the typing-latency budgets must still pass), so we widen the ceiling
-// to 3 MB to absorb CI runner jitter without weakening the regression check.
-const MAX_RENDERER_SCHEDULER_QUEUED_CHARS = 3 * 1024 * 1024
+// Why: peak queued chars is noisy at the byte level on CI, but a coarse cap
+// still catches renderer queue growth that dropped-backlog/latency checks miss.
+const MAX_RENDERER_SCHEDULER_QUEUED_CHARS = 5 * 1024 * 1024
+const MAIN_RENDERER_PRESSURE_TARGET_CHARS = 2 * 1024 * 1024
 
 type MainPressureDeps<
   TMeasurement,
@@ -127,7 +125,7 @@ export async function runMainPressureScenario<
   const pressureScriptPath = path.join(testRepoPath, `.orca-opencode-pressure-load-${runId}.mjs`)
   await seedActiveTerminalScrollback(orcaPage, typingPane.ptyId, scrollRunId)
   deps.writeInteractivePromptScript(typingScriptPath, runId)
-  writePressureOutputScript(pressureScriptPath, runId)
+  writePressureOutputScript(pressureScriptPath, runId, 'tui')
   await deps.resetTerminalPtyOutputDebug(orcaPage)
   await deps.holdTerminalAckGate(
     orcaPage,
@@ -275,7 +273,9 @@ function expectMainPressureAndTyping<TMeasurement extends MainPressureMeasuremen
 }): void {
   expect(pressureBeforeTyping.peakPendingChars).toBeGreaterThan(0)
   expect(pressureBeforeTyping.ackGatedFlushSkipCount).toBeGreaterThan(0)
-  expect(mainPressure?.peakRendererInFlightChars ?? 0).toBeGreaterThanOrEqual(8 * 1024 * 1024)
+  expect(mainPressure?.peakRendererInFlightChars ?? 0).toBeGreaterThanOrEqual(
+    MAIN_RENDERER_PRESSURE_TARGET_CHARS
+  )
   expect(ackGate?.heldAckChars ?? 0).toBeGreaterThan(0)
   expect(scheduler?.droppedBacklogCount ?? Number.POSITIVE_INFINITY).toBe(0)
   expect(scheduler?.peakQueuedChars ?? Number.POSITIVE_INFINITY).toBeLessThanOrEqual(

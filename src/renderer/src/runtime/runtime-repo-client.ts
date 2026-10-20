@@ -1,6 +1,19 @@
-import type { BaseRefSearchResult, GlobalSettings } from '../../../shared/types'
+import type { BaseRefSearchResult } from '../../../shared/repo-types'
 import { legacyBaseRefSearchResult } from '../../../shared/base-ref-search-result'
-import { callRuntimeRpc, getActiveRuntimeTarget } from './runtime-rpc-client'
+import { callRuntimeRpc } from './runtime-rpc-client'
+import { ipcOrRuntimeTargetForHostId } from './runtime-client-target'
+import type { RuntimeClientTarget } from '../../../shared/runtime-client-target'
+import { isRuntimeRepoRefSearchQueryWithinLimit } from './runtime-repo-search-bounds'
+import type { ExecutionHostId } from '../../../shared/execution-host'
+
+/** The repo's own host: a server's runtime, or this app (with `hostId`) for local and SSH repos. */
+function repoHostTarget(hostId: ExecutionHostId): RuntimeClientTarget {
+  const target = ipcOrRuntimeTargetForHostId(hostId)
+  if (!target) {
+    throw new Error('The project host is unresolved.')
+  }
+  return target
+}
 
 export type RuntimeRepoBaseRefDefault = {
   defaultBaseRef: string | null
@@ -8,12 +21,12 @@ export type RuntimeRepoBaseRefDefault = {
 }
 
 export async function getRuntimeRepoBaseRefDefault(
-  settings: Pick<GlobalSettings, 'activeRuntimeEnvironmentId'> | null | undefined,
+  hostId: ExecutionHostId,
   repoId: string
 ): Promise<RuntimeRepoBaseRefDefault> {
-  const target = getActiveRuntimeTarget(settings)
+  const target = repoHostTarget(hostId)
   if (target.kind !== 'environment') {
-    return window.api.repos.getBaseRefDefault({ repoId })
+    return window.api.repos.getBaseRefDefault({ repoId, hostId })
   }
   return callRuntimeRpc<RuntimeRepoBaseRefDefault>(
     target,
@@ -24,14 +37,17 @@ export async function getRuntimeRepoBaseRefDefault(
 }
 
 export async function searchRuntimeRepoBaseRefs(
-  settings: Pick<GlobalSettings, 'activeRuntimeEnvironmentId'> | null | undefined,
+  hostId: ExecutionHostId,
   repoId: string,
   query: string,
   limit: number
 ): Promise<string[]> {
-  const target = getActiveRuntimeTarget(settings)
+  if (!isRuntimeRepoRefSearchQueryWithinLimit(query)) {
+    return []
+  }
+  const target = repoHostTarget(hostId)
   if (target.kind !== 'environment') {
-    return window.api.repos.searchBaseRefs({ repoId, query, limit })
+    return window.api.repos.searchBaseRefs({ repoId, query, limit, hostId })
   }
   const result = await callRuntimeRpc<{ refs: string[]; truncated: boolean }>(
     target,
@@ -43,14 +59,22 @@ export async function searchRuntimeRepoBaseRefs(
 }
 
 export async function searchRuntimeRepoBaseRefDetails(
-  settings: Pick<GlobalSettings, 'activeRuntimeEnvironmentId'> | null | undefined,
+  hostId: ExecutionHostId,
   repoId: string,
   query: string,
   limit: number
 ): Promise<BaseRefSearchResult[]> {
-  const target = getActiveRuntimeTarget(settings)
+  if (!isRuntimeRepoRefSearchQueryWithinLimit(query)) {
+    return []
+  }
+  const target = repoHostTarget(hostId)
   if (target.kind !== 'environment') {
-    return window.api.repos.searchBaseRefDetails({ repoId, query, limit })
+    return window.api.repos.searchBaseRefDetails({
+      repoId,
+      query,
+      limit,
+      hostId
+    })
   }
   const result = await callRuntimeRpc<{
     refs: string[]

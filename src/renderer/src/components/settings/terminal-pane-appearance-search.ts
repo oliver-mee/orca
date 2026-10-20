@@ -35,6 +35,23 @@ export const getTerminalPaneAppearanceSearchEntries = createLocalizedCatalog(() 
 
 export const getTerminalPaneInteractionSearchEntries = createLocalizedCatalog(() => [
   {
+    title: translate('auto.components.settings.terminal.search.scrollSpeed.title', 'Scroll Speed'),
+    description: translate(
+      'auto.components.settings.terminal.search.scrollSpeed.description',
+      'Tune normal terminal scrollback, fast modifier scrolling, and full-screen TUI wheel speed.'
+    ),
+    keywords: [
+      ...translateSearchKeyword('auto.components.settings.terminal.search.39ea7c0d28', 'terminal'),
+      ...translateSearchKeyword('auto.components.settings.terminal.search.scroll', 'scroll'),
+      ...translateSearchKeyword('auto.components.settings.terminal.search.scrolling', 'scrolling'),
+      ...translateSearchKeyword('auto.components.settings.terminal.search.speed', 'speed'),
+      ...translateSearchKeyword('auto.components.settings.terminal.search.wheel', 'wheel'),
+      ...translateSearchKeyword('auto.components.settings.terminal.search.ea364ce6e4', 'mouse'),
+      ...translateSearchKeyword('auto.components.settings.terminal.search.trackpad', 'trackpad'),
+      ...translateSearchKeyword('auto.components.settings.terminal.search.tui', 'tui')
+    ]
+  },
+  {
     title: translate(
       'auto.components.settings.terminal.search.ask_before_closing_running_terminals_title',
       'Ask Before Closing Running Terminals'
@@ -68,7 +85,9 @@ export const getTerminalPaneInteractionSearchEntries = createLocalizedCatalog(()
       ...translateSearchKeyword('auto.components.settings.terminal.search.ea364ce6e4', 'mouse'),
       ...translateSearchKeyword('auto.components.settings.terminal.search.d1fa00a9cb', 'hover'),
       ...translateSearchKeyword('auto.components.settings.terminal.search.846a7a1204', 'pane'),
-      ...translateSearchKeyword('auto.components.settings.terminal.search.82b63d07fe', 'ghostty'),
+      // Why: product name stays untranslated so search matches "Ghostty".
+      'Ghostty',
+      'ghostty',
       ...translateSearchKeyword('auto.components.settings.terminal.search.f036794286', 'active')
     ]
   },

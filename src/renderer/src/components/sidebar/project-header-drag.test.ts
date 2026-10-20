@@ -34,4 +34,27 @@ describe('repo header action targets', () => {
     expect(isRepoHeaderActionTarget(header.querySelector('#label'), header)).toBe(false)
     expect(isRepoHeaderActionTarget(header, header)).toBe(false)
   })
+
+  it('ignores the hover collapse affordance', () => {
+    const header = createHeader(`
+      <div data-repo-header-collapse-affordance="">
+        <span id="chevron"></span>
+      </div>
+    `)
+
+    expect(isRepoHeaderActionTarget(header.querySelector('#chevron'), header)).toBe(true)
+  })
+
+  it('ignores the project header actions overlay (including gaps between icons)', () => {
+    const header = createHeader(`
+      <div data-repo-header-actions="">
+        <button type="button" data-repo-header-action=""><span id="icon"></span></button>
+      </div>
+    `)
+
+    expect(
+      isRepoHeaderActionTarget(header.querySelector('[data-repo-header-actions]'), header)
+    ).toBe(true)
+    expect(isRepoHeaderActionTarget(header.querySelector('#icon'), header)).toBe(true)
+  })
 })

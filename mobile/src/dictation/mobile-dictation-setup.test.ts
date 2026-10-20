@@ -1,7 +1,9 @@
 import { describe, expect, it, vi } from 'vitest'
+import { LogicalClientCutoverError } from '../transport/stable-logical-rpc-client'
 import type { RpcClient } from '../transport/rpc-client'
 import type { RpcFailure, RpcResponse, RpcSuccess } from '../transport/types'
 import {
+  deleteDictationModel,
   downloadDictationModel,
   fetchDictationSetup,
   isDictationReady,
@@ -18,6 +20,10 @@ function ok(result: unknown): RpcSuccess {
 function fail(message: string): RpcFailure {
   return { id: 'r', ok: false, error: { code: 'x', message }, _meta: { runtimeId: 'rt' } }
 }
+function malformedFailure(error: { code?: string; message?: string }): RpcResponse {
+  return { id: 'r', ok: false, error, _meta: { runtimeId: 'rt' } } as unknown as RpcResponse
+}
+
 function clientWith(responses: RpcResponse[]): Pick<RpcClient, 'sendRequest'> & {
   calls: Array<{ method: string; params: unknown }>
 } {
@@ -56,10 +62,40 @@ describe('isDictationSetupRequiredError', () => {
 
 describe('rpc wrappers', () => {
   it('fetches setup', async () => {
-    const setup: MobileSpeechSetup = { enabled: false, selectedModelId: '', models: [] }
+    const setup: MobileSpeechSetup = {
+      enabled: false,
+      selectedModelId: '',
+      dictationMode: 'toggle',
+      models: []
+    }
     const client = clientWith([ok(setup)])
     await expect(fetchDictationSetup(client)).resolves.toEqual(setup)
     expect(client.calls[0]).toEqual({ method: 'speech.models.list', params: null })
+  })
+
+  it('retries the idempotent setup read once after logical-client cutover', async () => {
+    const setup: MobileSpeechSetup = {
+      enabled: false,
+      selectedModelId: '',
+      dictationMode: 'toggle',
+      models: []
+    }
+    const sendRequest = vi
+      .fn()
+      .mockRejectedValueOnce(new LogicalClientCutoverError())
+      .mockResolvedValueOnce(ok(setup))
+
+    await expect(fetchDictationSetup({ sendRequest })).resolves.toEqual(setup)
+    expect(sendRequest).toHaveBeenCalledTimes(2)
+    expect(sendRequest).toHaveBeenNthCalledWith(1, 'speech.models.list', null)
+    expect(sendRequest).toHaveBeenNthCalledWith(2, 'speech.models.list', null)
+  })
+
+  it('does not retry unrelated setup-read failures', async () => {
+    const sendRequest = vi.fn().mockRejectedValue(new Error('offline'))
+
+    await expect(fetchDictationSetup({ sendRequest })).rejects.toThrow('offline')
+    expect(sendRequest).toHaveBeenCalledOnce()
   })
 
   it('starts a download', async () => {
@@ -68,8 +104,25 @@ describe('rpc wrappers', () => {
     expect(client.calls[0]).toEqual({ method: 'speech.models.download', params: { modelId: 'm1' } })
   })
 
+  it('deletes a model and returns refreshed setup', async () => {
+    const setup: MobileSpeechSetup = {
+      enabled: true,
+      selectedModelId: '',
+      dictationMode: 'toggle',
+      models: []
+    }
+    const client = clientWith([ok(setup)])
+    await expect(deleteDictationModel(client, 'm1')).resolves.toEqual(setup)
+    expect(client.calls[0]).toEqual({ method: 'speech.models.delete', params: { modelId: 'm1' } })
+  })
+
   it('sets config', async () => {
-    const setup: MobileSpeechSetup = { enabled: true, selectedModelId: 'm1', models: [] }
+    const setup: MobileSpeechSetup = {
+      enabled: true,
+      selectedModelId: 'm1',
+      dictationMode: 'hold',
+      models: []
+    }
     const client = clientWith([ok(setup)])
     await expect(setDictationConfig(client, { enabled: true, modelId: 'm1' })).resolves.toEqual(
       setup
@@ -83,6 +136,56 @@ describe('rpc wrappers', () => {
   it('surfaces RPC failures as errors', async () => {
     const client = clientWith([fail('disconnected')])
     await expect(fetchDictationSetup(client)).rejects.toThrow('disconnected')
+  })
+
+  it('maps legacy desktop denials to update guidance', async () => {
+    const client = clientWith([
+      {
+        id: 'r',
+        ok: false,
+        error: {
+          code: 'forbidden',
+          message: "Method 'speech.models.list' is not available to mobile clients"
+        },
+        _meta: { runtimeId: 'rt' }
+      }
+    ])
+
+    await expect(fetchDictationSetup(client)).rejects.toThrow(
+      'Update the paired desktop Orca app to use mobile voice settings.'
+    )
+  })
+
+  it('maps legacy desktop method-not-found failures to update guidance', async () => {
+    const client = clientWith([
+      malformedFailure({
+        code: 'method_not_found',
+        message: 'Unknown method: speech.models.list'
+      })
+    ])
+
+    await expect(fetchDictationSetup(client)).rejects.toThrow(
+      'Update the paired desktop Orca app to use mobile voice settings.'
+    )
+  })
+
+  it('keeps unrelated speech model failures specific', async () => {
+    const client = clientWith([
+      malformedFailure({
+        code: 'internal_error',
+        message: 'speech.models.list failed unexpectedly'
+      })
+    ])
+
+    await expect(fetchDictationSetup(client)).rejects.toThrow(
+      'speech.models.list failed unexpectedly'
+    )
+  })
+
+  it('falls back when runtime failures omit a message', async () => {
+    const client = clientWith([malformedFailure({ code: 'internal_error' })])
+
+    await expect(fetchDictationSetup(client)).rejects.toThrow('Failed to load dictation models')
   })
 })
 
@@ -98,6 +201,7 @@ describe('state helpers', () => {
       isDictationReady({
         enabled: true,
         selectedModelId: 'm1',
+        dictationMode: 'toggle',
         models: [model({ status: 'ready' })]
       })
     ).toBe(true)
@@ -105,6 +209,7 @@ describe('state helpers', () => {
       isDictationReady({
         enabled: false,
         selectedModelId: 'm1',
+        dictationMode: 'toggle',
         models: [model({ status: 'ready' })]
       })
     ).toBe(false)
@@ -112,9 +217,17 @@ describe('state helpers', () => {
       isDictationReady({
         enabled: true,
         selectedModelId: 'm1',
+        dictationMode: 'toggle',
         models: [model({ status: 'not-downloaded' })]
       })
     ).toBe(false)
-    expect(isDictationReady({ enabled: true, selectedModelId: '', models: [] })).toBe(false)
+    expect(
+      isDictationReady({
+        enabled: true,
+        selectedModelId: '',
+        dictationMode: 'toggle',
+        models: []
+      })
+    ).toBe(false)
   })
 })

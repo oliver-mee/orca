@@ -1,37 +1,13 @@
-/* eslint-disable max-lines */
 import { describe, expect, it } from 'vitest'
 import {
-  buildMobileSessionTabSnapshots,
   canSkipRuntimeMobileSessionSyncKeyBuild,
   getRuntimeMobileSessionSyncKey,
   runtimeMobileSessionSyncKeysEqual
-} from './sync-runtime-graph'
-import type { AgentStatusEntry } from '../../../shared/agent-status-types'
+} from './sync-runtime-graph/sync-key'
+import { buildRuntimeMobileAgentStatusProjectionForTests } from './sync-runtime-graph/agent-status-projection'
+import { makeAgentStatusEntry, makeState } from './sync-runtime-graph-test-harness'
 import { getDefaultSettings } from '../../../shared/constants'
 import type { AppState } from '../store/types'
-
-function makeState(overrides: Partial<AppState> = {}): AppState {
-  return {
-    tabsByWorktree: {},
-    terminalLayoutsByTabId: {} as AppState['terminalLayoutsByTabId'],
-    runtimePaneTitlesByTabId: {} as AppState['runtimePaneTitlesByTabId'],
-    groupsByWorktree: {},
-    activeGroupIdByWorktree: {},
-    unifiedTabsByWorktree: {},
-    tabBarOrderByWorktree: {},
-    activeFileId: null,
-    activeFileIdByWorktree: {},
-    activeBrowserTabIdByWorktree: {},
-    browserTabsByWorktree: {},
-    browserPagesByWorkspace: {},
-    openFiles: [],
-    editorDrafts: {},
-    activeTabId: null,
-    agentStatusByPaneKey: {},
-    agentStatusEpoch: 0,
-    ...overrides
-  } as AppState
-}
 
 // Why: the comparator at `runtimeMobileSessionSyncKeysEqual` checks
 // `terminalLayoutsByTabId`, `runtimePaneTitlesByTabId`, `groupsByWorktree`,
@@ -53,9 +29,12 @@ function makeSharedOverrides(): Partial<AppState> {
     unifiedTabsByWorktree: {},
     tabBarOrderByWorktree: {},
     activeFileIdByWorktree: {},
+    activeTabType: 'terminal',
+    activeTabTypeByWorktree: {},
     activeBrowserTabIdByWorktree: {},
     browserTabsByWorktree: {},
     browserPagesByWorkspace: {},
+    browserCertificateFailuresByPageId: {},
     openFiles: [],
     editorDrafts: {},
     agentStatusByPaneKey: {},
@@ -63,21 +42,21 @@ function makeSharedOverrides(): Partial<AppState> {
   }
 }
 
-function makeAgentStatusEntry(overrides: Partial<AgentStatusEntry> = {}): AgentStatusEntry {
-  return {
-    state: 'working',
-    prompt: 'fix parity',
-    updatedAt: 1_700_000_000_000,
-    stateStartedAt: 1_699_999_999_000,
-    agentType: 'codex',
-    paneKey: 'term-1:11111111-1111-4111-8111-111111111111',
-    terminalTitle: 'codex [working]',
-    stateHistory: [],
-    ...overrides
-  }
-}
-
 describe('getRuntimeMobileSessionSyncKey', () => {
+  it('includes assistant preview provenance in the mobile status projection', () => {
+    const paneKey = 'term-1:11111111-1111-4111-8111-111111111111'
+    const base = makeAgentStatusEntry({ paneKey, lastAssistantMessage: 'tool output' })
+    const flagged = makeAgentStatusEntry({
+      paneKey,
+      lastAssistantMessage: 'tool output',
+      lastAssistantMessageIsToolOutput: true
+    })
+
+    expect(buildRuntimeMobileAgentStatusProjectionForTests({ [paneKey]: base })).not.toBe(
+      buildRuntimeMobileAgentStatusProjectionForTests({ [paneKey]: flagged })
+    )
+  })
+
   it('changes when mobile markdown tab state changes', () => {
     const base = makeState({
       openFiles: [
@@ -380,6 +359,71 @@ describe('getRuntimeMobileSessionSyncKey', () => {
     expect(runtimeMobileSessionSyncKeysEqual(before, after)).toBe(false)
   })
 
+  it('changes when a native-chat launch draft is seeded or cleared', () => {
+    const sharedOverrides = makeSharedOverrides()
+    const launchDraft = {
+      tabId: 'term-1',
+      agent: 'claude' as const,
+      text: 'https://github.com/o/r/issues/12',
+      createdAt: 1
+    }
+
+    const before = getRuntimeMobileSessionSyncKey(
+      makeState({ ...sharedOverrides, nativeChatLaunchDraftByTabId: {} })
+    )
+    const after = getRuntimeMobileSessionSyncKey(
+      makeState({
+        ...sharedOverrides,
+        nativeChatLaunchDraftByTabId: { 'term-1': launchDraft }
+      })
+    )
+
+    expect(runtimeMobileSessionSyncKeysEqual(before, after)).toBe(false)
+  })
+
+  it('does not skip the App subscriber gate when a launch draft is seeded', () => {
+    // The key is never even built when this gate skips, so the draft-aware key
+    // case above cannot catch a regression here.
+    const sharedOverrides = makeSharedOverrides()
+    const before = makeState({ ...sharedOverrides, nativeChatLaunchDraftByTabId: {} })
+    const after = makeState({
+      ...sharedOverrides,
+      nativeChatLaunchDraftByTabId: {
+        'term-1': {
+          tabId: 'term-1',
+          agent: 'claude' as const,
+          text: 'https://github.com/o/r/issues/12',
+          createdAt: 1
+        }
+      }
+    })
+
+    expect(canSkipRuntimeMobileSessionSyncKeyBuild(after, before)).toBe(false)
+  })
+
+  it('changes and does not skip when a folder workspace is removed', () => {
+    const sharedOverrides = makeSharedOverrides()
+    const folderWorkspace = {
+      id: 'folder-1'
+    } as AppState['folderWorkspaces'][number]
+    const before = makeState({
+      ...sharedOverrides,
+      folderWorkspaces: [folderWorkspace]
+    })
+    const after = makeState({
+      ...sharedOverrides,
+      folderWorkspaces: []
+    })
+
+    expect(canSkipRuntimeMobileSessionSyncKeyBuild(after, before)).toBe(false)
+    expect(
+      runtimeMobileSessionSyncKeysEqual(
+        getRuntimeMobileSessionSyncKey(before),
+        getRuntimeMobileSessionSyncKey(after)
+      )
+    ).toBe(false)
+  })
+
   it('changes when explicit agent status epoch changes', () => {
     const sharedOverrides = makeSharedOverrides()
     const before = getRuntimeMobileSessionSyncKey(
@@ -544,358 +588,5 @@ describe('getRuntimeMobileSessionSyncKey', () => {
     expect(afterKey.systemPrefersDark).toBe(true)
     expect(afterKey.terminalThemeProjection).not.toBe(beforeKey.terminalThemeProjection)
     expect(runtimeMobileSessionSyncKeysEqual(beforeKey, afterKey)).toBe(false)
-  })
-})
-
-describe('buildMobileSessionTabSnapshots', () => {
-  it('preserves source-control diff metadata for mobile file tabs', () => {
-    const diffId = 'wt-1::diff::unstaged::src/app.ts'
-    const state = makeState({
-      browserTabsByWorktree: {},
-      tabBarOrderByWorktree: { 'wt-1': [diffId] },
-      openFiles: [
-        {
-          id: diffId,
-          filePath: '/repo/src/app.ts',
-          relativePath: 'src/app.ts',
-          worktreeId: 'wt-1',
-          language: 'typescript',
-          mode: 'diff',
-          diffSource: 'unstaged',
-          isDirty: false
-        }
-      ]
-    })
-
-    const snapshot = buildMobileSessionTabSnapshots(state)[0]
-
-    expect(snapshot?.tabs).toMatchObject([
-      {
-        type: 'file',
-        id: diffId,
-        mode: 'diff',
-        diffSource: 'unstaged',
-        relativePath: 'src/app.ts'
-      }
-    ])
-  })
-
-  it('omits unsupported branch and commit diff metadata from mobile file tabs', () => {
-    const diffId = 'wt-1::diff::branch::src/app.ts'
-    const state = makeState({
-      browserTabsByWorktree: {},
-      tabBarOrderByWorktree: { 'wt-1': [diffId] },
-      openFiles: [
-        {
-          id: diffId,
-          filePath: '/repo/src/app.ts',
-          relativePath: 'src/app.ts',
-          worktreeId: 'wt-1',
-          language: 'typescript',
-          mode: 'diff',
-          diffSource: 'branch',
-          isDirty: false
-        }
-      ]
-    })
-
-    const snapshot = buildMobileSessionTabSnapshots(state)[0]
-    const tab = snapshot?.tabs[0]
-
-    expect(tab).toMatchObject({ type: 'file', mode: 'diff', relativePath: 'src/app.ts' })
-    expect(tab).not.toHaveProperty('diffSource')
-  })
-
-  it('keeps duplicate file ids scoped to their worktree', () => {
-    const sharedRemotePath = '/home/dev/project/README.md'
-    const previewId = `markdown-preview::${sharedRemotePath}`
-    const state = makeState({
-      browserTabsByWorktree: {},
-      tabBarOrderByWorktree: {
-        'wt-1': [sharedRemotePath, previewId],
-        'wt-2': [sharedRemotePath]
-      },
-      openFiles: [
-        {
-          id: sharedRemotePath,
-          filePath: sharedRemotePath,
-          relativePath: 'docs/wt-one.md',
-          worktreeId: 'wt-1',
-          language: 'markdown',
-          mode: 'edit',
-          isDirty: true
-        },
-        {
-          id: sharedRemotePath,
-          filePath: sharedRemotePath,
-          relativePath: 'docs/wt-two.md',
-          worktreeId: 'wt-2',
-          language: 'markdown',
-          mode: 'edit',
-          isDirty: false
-        },
-        {
-          id: previewId,
-          filePath: sharedRemotePath,
-          relativePath: 'docs/wt-one.md',
-          worktreeId: 'wt-1',
-          language: 'markdown',
-          mode: 'markdown-preview',
-          markdownPreviewSourceFileId: sharedRemotePath,
-          isDirty: false
-        }
-      ]
-    })
-
-    const snapshotsByWorktree = new Map(
-      buildMobileSessionTabSnapshots(state).map((snapshot) => [snapshot.worktree, snapshot])
-    )
-
-    expect(snapshotsByWorktree.get('wt-1')?.tabs).toMatchObject([
-      { type: 'markdown', title: 'wt-one.md', sourceRelativePath: 'docs/wt-one.md' },
-      { type: 'markdown', title: 'wt-one.md', sourceRelativePath: 'docs/wt-one.md' }
-    ])
-    expect(snapshotsByWorktree.get('wt-2')?.tabs).toMatchObject([
-      { type: 'markdown', title: 'wt-two.md', sourceRelativePath: 'docs/wt-two.md' }
-    ])
-  })
-
-  it('publishes terminal pane agent status', () => {
-    const leafId = '11111111-1111-4111-8111-111111111111'
-    const paneKey = `term-1:${leafId}`
-    const state = makeState({
-      tabBarOrderByWorktree: { 'wt-1': ['term-1'] },
-      tabsByWorktree: {
-        'wt-1': [{ id: 'term-1', title: 'codex [working]', customTitle: null, ptyId: 'pty-1' }]
-      } as unknown as AppState['tabsByWorktree'],
-      terminalLayoutsByTabId: {
-        'term-1': {
-          root: { type: 'leaf', leafId },
-          activeLeafId: leafId,
-          expandedLeafId: null,
-          ptyIdsByLeafId: { [leafId]: 'pty-1' }
-        }
-      } as AppState['terminalLayoutsByTabId'],
-      agentStatusByPaneKey: {
-        [paneKey]: {
-          state: 'working',
-          prompt: 'fix parity',
-          updatedAt: 1_700_000_000_000,
-          stateStartedAt: 1_699_999_999_000,
-          agentType: 'codex',
-          paneKey,
-          terminalTitle: 'codex [working]',
-          stateHistory: []
-        }
-      }
-    })
-
-    expect(buildMobileSessionTabSnapshots(state)[0]?.tabs).toMatchObject([
-      {
-        type: 'terminal',
-        id: `term-1::${leafId}`,
-        agentStatus: {
-          state: 'working',
-          prompt: 'fix parity',
-          agentType: 'codex',
-          paneKey
-        }
-      }
-    ])
-  })
-
-  it('does not publish terminal pane agent status for the Claude agents screen behind a custom title', () => {
-    const leafId = '11111111-1111-4111-8111-111111111111'
-    const paneKey = `term-1:${leafId}`
-    const state = makeState({
-      tabBarOrderByWorktree: { 'wt-1': ['term-1'] },
-      tabsByWorktree: {
-        'wt-1': [{ id: 'term-1', title: 'claude agents', customTitle: 'Pinned', ptyId: 'pty-1' }]
-      } as unknown as AppState['tabsByWorktree'],
-      terminalLayoutsByTabId: {
-        'term-1': {
-          root: { type: 'leaf', leafId },
-          activeLeafId: leafId,
-          expandedLeafId: null,
-          ptyIdsByLeafId: { [leafId]: 'pty-1' }
-        }
-      } as AppState['terminalLayoutsByTabId'],
-      agentStatusByPaneKey: {
-        [paneKey]: {
-          state: 'working',
-          prompt: 'stale task',
-          updatedAt: 1_700_000_000_000,
-          stateStartedAt: 1_699_999_999_000,
-          agentType: 'claude',
-          paneKey,
-          terminalTitle: 'claude working',
-          stateHistory: []
-        }
-      }
-    })
-
-    const [tab] = buildMobileSessionTabSnapshots(state)[0]?.tabs ?? []
-
-    expect(tab).toMatchObject({
-      type: 'terminal',
-      id: `term-1::${leafId}`,
-      title: 'Pinned'
-    })
-    expect(tab).not.toHaveProperty('agentStatus')
-  })
-
-  it('publishes generated terminal titles to mobile snapshots only when enabled', () => {
-    const leafId = '11111111-1111-4111-8111-111111111111'
-    const base = makeState({
-      settings: { ...getDefaultSettings('/tmp'), tabAutoGenerateTitle: false },
-      tabBarOrderByWorktree: { 'wt-1': ['term-1'] },
-      tabsByWorktree: {
-        'wt-1': [
-          {
-            id: 'term-1',
-            title: 'Codex working',
-            generatedTitle: 'Fix remote tabs',
-            customTitle: null,
-            ptyId: 'pty-1'
-          }
-        ]
-      } as unknown as AppState['tabsByWorktree'],
-      terminalLayoutsByTabId: {
-        'term-1': {
-          root: { type: 'leaf', leafId },
-          activeLeafId: leafId,
-          expandedLeafId: null,
-          ptyIdsByLeafId: { [leafId]: 'pty-1' }
-        }
-      } as AppState['terminalLayoutsByTabId']
-    })
-
-    expect(buildMobileSessionTabSnapshots(base)[0]?.tabs[0]).toMatchObject({
-      type: 'terminal',
-      title: 'Codex working'
-    })
-    expect(
-      buildMobileSessionTabSnapshots({
-        ...base,
-        settings: { ...getDefaultSettings('/tmp'), tabAutoGenerateTitle: true }
-      })[0]?.tabs[0]
-    ).toMatchObject({
-      type: 'terminal',
-      title: 'Fix remote tabs'
-    })
-  })
-
-  it('publishes quick command labels to mobile snapshots before generated titles', () => {
-    const leafId = '11111111-1111-4111-8111-111111111111'
-    const state = makeState({
-      settings: { ...getDefaultSettings('/tmp'), tabAutoGenerateTitle: true },
-      tabBarOrderByWorktree: { 'wt-1': ['term-1'] },
-      tabsByWorktree: {
-        'wt-1': [
-          {
-            id: 'term-1',
-            title: 'pnpm test',
-            quickCommandLabel: 'Run tests',
-            generatedTitle: 'Generated title',
-            customTitle: null,
-            ptyId: 'pty-1'
-          }
-        ]
-      } as unknown as AppState['tabsByWorktree'],
-      terminalLayoutsByTabId: {
-        'term-1': {
-          root: { type: 'leaf', leafId },
-          activeLeafId: leafId,
-          expandedLeafId: null,
-          ptyIdsByLeafId: { [leafId]: 'pty-1' }
-        }
-      } as AppState['terminalLayoutsByTabId']
-    })
-
-    expect(buildMobileSessionTabSnapshots(state)[0]?.tabs[0]).toMatchObject({
-      type: 'terminal',
-      title: 'Run tests',
-      quickCommandLabel: 'Run tests'
-    })
-  })
-
-  it('publishes the desktop-resolved terminal theme for mobile terminal tabs', () => {
-    const leafId = '11111111-1111-4111-8111-111111111111'
-    const state = makeState({
-      settings: {
-        ...getDefaultSettings('/tmp'),
-        theme: 'light',
-        terminalUseSeparateLightTheme: true,
-        terminalColorOverrides: {
-          background: '#f8f8f8',
-          foreground: '#101010',
-          cursor: '#202020'
-        },
-        terminalBackgroundOpacity: 0.8,
-        terminalCursorOpacity: 0.5
-      },
-      tabBarOrderByWorktree: { 'wt-1': ['term-1'] },
-      tabsByWorktree: {
-        'wt-1': [{ id: 'term-1', title: 'Terminal', customTitle: null, ptyId: 'pty-1' }]
-      } as unknown as AppState['tabsByWorktree'],
-      terminalLayoutsByTabId: {
-        'term-1': {
-          root: { type: 'leaf', leafId },
-          activeLeafId: leafId,
-          expandedLeafId: null,
-          ptyIdsByLeafId: { [leafId]: 'pty-1' }
-        }
-      } as AppState['terminalLayoutsByTabId']
-    })
-
-    expect(buildMobileSessionTabSnapshots(state)[0]?.tabs).toMatchObject([
-      {
-        type: 'terminal',
-        terminalTheme: {
-          mode: 'light',
-          theme: {
-            background: 'rgba(248, 248, 248, 0.8)',
-            foreground: '#101010',
-            cursor: 'rgba(32, 32, 32, 0.5)'
-          }
-        }
-      }
-    ])
-  })
-
-  it('uses the explicit system appearance for mobile terminal theme snapshots', () => {
-    const leafId = '11111111-1111-4111-8111-111111111111'
-    const state = makeState({
-      settings: {
-        ...getDefaultSettings('/tmp'),
-        theme: 'system',
-        terminalUseSeparateLightTheme: true
-      },
-      tabBarOrderByWorktree: { 'wt-1': ['term-1'] },
-      tabsByWorktree: {
-        'wt-1': [{ id: 'term-1', title: 'Terminal', customTitle: null, ptyId: 'pty-1' }]
-      } as unknown as AppState['tabsByWorktree'],
-      terminalLayoutsByTabId: {
-        'term-1': {
-          root: { type: 'leaf', leafId },
-          activeLeafId: leafId,
-          expandedLeafId: null,
-          ptyIdsByLeafId: { [leafId]: 'pty-1' }
-        }
-      } as AppState['terminalLayoutsByTabId']
-    })
-
-    expect(buildMobileSessionTabSnapshots(state, false)[0]?.tabs).toMatchObject([
-      {
-        type: 'terminal',
-        terminalTheme: { mode: 'light' }
-      }
-    ])
-    expect(buildMobileSessionTabSnapshots(state, true)[0]?.tabs).toMatchObject([
-      {
-        type: 'terminal',
-        terminalTheme: { mode: 'dark' }
-      }
-    ])
   })
 })

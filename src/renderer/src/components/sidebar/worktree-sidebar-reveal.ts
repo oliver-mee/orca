@@ -1,4 +1,5 @@
-import { GROUP_HEADER_ROW_HEIGHT } from './worktree-list-virtual-rows'
+import { GROUP_HEADER_ROW_HEIGHT } from './worktree-list/viewport/virtual-rows'
+import { motionSafeScrollBehavior } from '@/hooks/usePrefersReducedMotion'
 
 const WORKTREE_REVEAL_TOP_CLEARANCE = 6
 export const WORKTREE_SIDEBAR_REVEAL_TOP_INSET =
@@ -38,7 +39,10 @@ export function getScrollTopToRevealBounds(
 export function revealElementInScrollContainer(
   container: HTMLElement,
   element: Element,
-  behavior: ScrollBehavior
+  behavior: ScrollBehavior,
+  // Why: any other scrollTop write cancels the scroll issued here mid-animation;
+  // callers use this to stand their scroll-position guards down until it lands.
+  onScrollIssued?: (targetTop: number) => void
 ): boolean {
   if (!container.contains(element)) {
     return false
@@ -48,8 +52,11 @@ export function revealElementInScrollContainer(
     getElementScrollBounds(container, element),
     WORKTREE_SIDEBAR_REVEAL_TOP_INSET
   )
-  if (nextScrollTop !== null) {
-    container.scrollTo({ top: Math.max(0, nextScrollTop), behavior })
+  if (nextScrollTop === null) {
+    return true
   }
+  const targetTop = Math.max(0, nextScrollTop)
+  onScrollIssued?.(targetTop)
+  container.scrollTo({ top: targetTop, behavior: motionSafeScrollBehavior(behavior) })
   return true
 }

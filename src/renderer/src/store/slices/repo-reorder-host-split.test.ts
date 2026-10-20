@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import type { Repo } from '../../../../shared/types'
+import type { Repo } from '../../../../shared/repo-types'
 import { splitRepoReorderByHost } from './repo-reorder-host-split'
 
 function repo(id: string, executionHostId: string | null): Repo {
@@ -42,5 +42,16 @@ describe('splitRepoReorderByHost', () => {
       activeRuntimeEnvironmentId: null
     })
     expect(groups).toEqual([{ hostId: 'local', orderedIds: ['a'] }])
+  })
+
+  it('routes duplicate bare ids by occurrence in current repo order', () => {
+    const repos = [repo('same', 'local'), repo('same', 'runtime:env-1')]
+    const groups = splitRepoReorderByHost(['same', 'same'], repos, {
+      activeRuntimeEnvironmentId: null
+    })
+    expect(groups).toEqual([
+      { hostId: 'local', orderedIds: ['same'] },
+      { hostId: 'runtime:env-1', orderedIds: ['same'] }
+    ])
   })
 })

@@ -16,7 +16,7 @@ export const MAX_WEBHOOK_CONTENT_TYPE_CHARS = 256
 const SECRET_MODES: readonly AutomationWebhookSecretMode[] = ['none', 'token', 'hmac_sha256']
 
 function isSecretMode(value: unknown): value is AutomationWebhookSecretMode {
-  return typeof value === 'string' && SECRET_MODES.includes(value as AutomationWebhookSecretMode)
+  return typeof value === 'string' && SECRET_MODES.some((mode) => mode === value)
 }
 
 /** Normalize untrusted webhook config from create/update inputs into a stored
@@ -63,7 +63,7 @@ export function captureWebhookDelivery(args: {
 /** Compose the prompt actually sent to the agent for a run: the automation's
  *  own prompt, plus the raw webhook body appended as additional context when
  *  the run was webhook-triggered. Generic by design — no provider-specific
- *  field parsing (issue #2). Used by both the renderer and headless dispatch
+ *  field parsing (issue #12400). Used by both the renderer and headless dispatch
  *  paths so the two stay in sync. */
 export function composeAutomationDispatchPrompt(
   automation: Pick<Automation, 'prompt'>,

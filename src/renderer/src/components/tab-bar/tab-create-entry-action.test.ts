@@ -1,33 +1,79 @@
 import { describe, expect, it, vi } from 'vitest'
-import { openTabEntryWithOperations, type TabEntryOperations } from './tab-create-entry-action'
+import {
+  classifyTabEntryQuery,
+  getTabEntryOptions,
+  openTabEntryWithOperations,
+  TAB_ENTRY_ABSOLUTE_PATH_REMOTE_BLOCKED_MESSAGE,
+  validateNewTabEntryAbsolutePath,
+  validateNewTabEntryRelativePath,
+  type TabEntryOperations
+} from './tab-create-entry-action'
+import * as classifier from './tab-create-entry-classifier'
 
 const readyFiles = (files: string[]) => ({ files, loading: false, loadError: null })
+
+it('keeps the pure classifier available through the tab action module', () => {
+  expect(classifyTabEntryQuery).toBe(classifier.classifyTabEntryQuery)
+  expect(getTabEntryOptions).toBe(classifier.getTabEntryOptions)
+  expect(TAB_ENTRY_ABSOLUTE_PATH_REMOTE_BLOCKED_MESSAGE).toBe(
+    classifier.TAB_ENTRY_ABSOLUTE_PATH_REMOTE_BLOCKED_MESSAGE
+  )
+  expect(validateNewTabEntryAbsolutePath).toBe(classifier.validateNewTabEntryAbsolutePath)
+  expect(validateNewTabEntryRelativePath).toBe(classifier.validateNewTabEntryRelativePath)
+})
 
 describe('openTabEntryWithOperations', () => {
   function makeOperations(overrides: Partial<TabEntryOperations> = {}): TabEntryOperations {
     return {
-      createBrowserTab: vi.fn() as TabEntryOperations['createBrowserTab'],
       createRuntimePath: vi.fn().mockResolvedValue(undefined),
-      createWebRuntimeSessionBrowserTab: vi.fn().mockResolvedValue(true),
-      isWebRuntimeSessionActive: vi.fn().mockReturnValue(false),
+      openWorkspaceBrowserTab: vi.fn().mockResolvedValue(undefined),
+      openHtmlFilePreview: vi.fn(),
       openFile: vi.fn(),
       statRuntimePath: vi.fn().mockResolvedValue({ size: 1, isDirectory: false, mtime: 1 }),
+      statUserOpenedPath: vi.fn().mockResolvedValue({ isDirectory: false, escapesWorktree: false }),
+      assertAbsolutePathAllowed: vi.fn(),
       ...overrides
     }
   }
 
+  const runtimeContext = {
+    target: { kind: 'local' as const },
+    worktreeId: 'wt-1',
+    worktreePath: '/repo'
+  }
   const baseArgs = {
     fileList: readyFiles(['src/index.ts']),
     worktreeId: 'wt-1',
     groupId: 'group-1',
-    worktreePath: '/repo',
-    runtimeContext: {
-      settings: null,
-      worktreeId: 'wt-1',
-      worktreePath: '/repo'
-    },
-    activeRuntimeEnvironmentId: null
+    getFileContext: () => ({ worktreePath: '/repo', runtimeContext }),
+    allowAbsolutePaths: true,
+    localPlatform: 'posix' as const,
+    searchEngine: 'google' as const
   }
+
+  it.each([true, false])(
+    'previews HTML file URLs without creating files (local paths: %s)',
+    async (allowAbsolutePaths) => {
+      const operations = makeOperations()
+      await openTabEntryWithOperations({
+        ...baseArgs,
+        allowAbsolutePaths,
+        getFileContext: () => {
+          throw new Error('Preview requested file mutation context')
+        },
+        query: 'file:///repo/docs/report%20%E4%B8%AD.html',
+        operations
+      })
+      expect(operations.openHtmlFilePreview).toHaveBeenCalledWith({
+        filePath: '/repo/docs/report 中.html',
+        worktreeId: 'wt-1',
+        targetGroupId: 'group-1'
+      })
+      expect(operations.createRuntimePath).not.toHaveBeenCalled()
+      expect(operations.statUserOpenedPath).not.toHaveBeenCalled()
+      expect(operations.openWorkspaceBrowserTab).not.toHaveBeenCalled()
+    }
+  )
 
   it('stats existing files before opening and rejects directories', async () => {
     const operations = makeOperations({
@@ -46,12 +92,12 @@ describe('openTabEntryWithOperations', () => {
     await openTabEntryWithOperations({ ...baseArgs, query: 'docs/new.md', operations })
 
     expect(operations.createRuntimePath).toHaveBeenCalledWith(
-      baseArgs.runtimeContext,
+      runtimeContext,
       '/repo/docs',
       'directory'
     )
     expect(operations.createRuntimePath).toHaveBeenCalledWith(
-      baseArgs.runtimeContext,
+      runtimeContext,
       '/repo/docs/new.md',
       'file'
     )
@@ -98,19 +144,19 @@ describe('openTabEntryWithOperations', () => {
 
     expect(operations.createRuntimePath).toHaveBeenNthCalledWith(
       1,
-      baseArgs.runtimeContext,
+      runtimeContext,
       '/repo/.tmp',
       'directory'
     )
     expect(operations.createRuntimePath).toHaveBeenNthCalledWith(
       2,
-      baseArgs.runtimeContext,
+      runtimeContext,
       '/repo/.tmp/direct-entry-validation',
       'directory'
     )
     expect(operations.createRuntimePath).toHaveBeenNthCalledWith(
       3,
-      baseArgs.runtimeContext,
+      runtimeContext,
       '/repo/.tmp/direct-entry-validation/created.md',
       'file'
     )
@@ -137,9 +183,9 @@ describe('openTabEntryWithOperations', () => {
 
     await openTabEntryWithOperations({ ...baseArgs, query: 'docs/new.md', operations })
 
-    expect(operations.statRuntimePath).toHaveBeenCalledWith(baseArgs.runtimeContext, '/repo/docs')
+    expect(operations.statRuntimePath).toHaveBeenCalledWith(runtimeContext, '/repo/docs')
     expect(operations.createRuntimePath).toHaveBeenLastCalledWith(
-      baseArgs.runtimeContext,
+      runtimeContext,
       '/repo/docs/new.md',
       'file'
     )
@@ -167,58 +213,225 @@ describe('openTabEntryWithOperations', () => {
 
     await openTabEntryWithOperations({ ...baseArgs, query: 'docs/race.md', operations })
 
-    expect(operations.statRuntimePath).toHaveBeenCalledWith(
-      baseArgs.runtimeContext,
-      '/repo/docs/race.md'
-    )
+    expect(operations.statRuntimePath).toHaveBeenCalledWith(runtimeContext, '/repo/docs/race.md')
     expect(operations.openFile).toHaveBeenCalled()
   })
 
-  it('routes paired runtime browser creation through the web session API', async () => {
-    const operations = makeOperations({
-      isWebRuntimeSessionActive: vi.fn().mockReturnValue(true)
-    })
+  it('routes URL classifications through the workspace browser opener', async () => {
+    const operations = makeOperations()
 
     await openTabEntryWithOperations({
       ...baseArgs,
       query: 'https://example.com',
-      activeRuntimeEnvironmentId: 'runtime-1',
       operations
     })
 
-    expect(operations.createWebRuntimeSessionBrowserTab).toHaveBeenCalledWith({
-      worktreeId: 'wt-1',
-      environmentId: 'runtime-1',
+    expect(operations.openWorkspaceBrowserTab).toHaveBeenCalledWith({
+      workspaceId: 'wt-1',
       url: 'https://example.com/',
-      targetGroupId: 'group-1'
+      targetGroupId: 'group-1',
+      intent: { kind: 'url' }
     })
-    expect(operations.createBrowserTab).not.toHaveBeenCalled()
   })
 
-  it('falls back to a local browser tab when paired runtime browser creation fails', async () => {
+  it('builds a search URL from the selected immutable classification', async () => {
+    const operations = makeOperations()
+
+    await openTabEntryWithOperations({
+      ...baseArgs,
+      query: 'different query',
+      classification: { kind: 'search', engine: 'duckduckgo', query: 'react hooks' },
+      operations
+    })
+
+    expect(operations.openWorkspaceBrowserTab).toHaveBeenCalledWith({
+      workspaceId: 'wt-1',
+      url: 'https://duckduckgo.com/?q=react%20hooks',
+      targetGroupId: 'group-1',
+      intent: { kind: 'search', engine: 'duckduckgo' }
+    })
+  })
+
+  it('uses plain Kagi search URLs and the fallback classifier engine', async () => {
+    const operations = makeOperations()
+
+    await openTabEntryWithOperations({
+      ...baseArgs,
+      query: 'private project',
+      searchEngine: 'kagi',
+      operations
+    })
+
+    expect(operations.openWorkspaceBrowserTab).toHaveBeenCalledWith({
+      workspaceId: 'wt-1',
+      url: 'https://kagi.com/search?q=private%20project',
+      targetGroupId: 'group-1',
+      intent: { kind: 'search', engine: 'kagi' }
+    })
+  })
+
+  it('uses a configured Kagi private-session link', async () => {
+    const operations = makeOperations()
+
+    await openTabEntryWithOperations({
+      ...baseArgs,
+      query: 'private project',
+      searchEngine: 'kagi',
+      searchUrlOptions: {
+        kagiSessionLink: 'https://kagi.com/search?token=secret'
+      },
+      operations
+    })
+
+    expect(operations.openWorkspaceBrowserTab).toHaveBeenCalledWith({
+      workspaceId: 'wt-1',
+      url: 'https://kagi.com/search?token=secret&q=private+project',
+      targetGroupId: 'group-1',
+      intent: { kind: 'search', engine: 'kagi' }
+    })
+  })
+
+  it('opens absolute local files as user-named in the target group', async () => {
+    const operations = makeOperations()
+
+    await openTabEntryWithOperations({
+      ...baseArgs,
+      classification: { kind: 'absolute-file', filePath: '/tmp/notes.md' },
+      query: '/tmp/notes.md',
+      operations
+    })
+
+    expect(operations.statUserOpenedPath).toHaveBeenCalledWith(runtimeContext, '/tmp/notes.md')
+    expect(operations.openFile).toHaveBeenCalledWith(
+      expect.objectContaining({
+        filePath: '/tmp/notes.md',
+        relativePath: '/tmp/notes.md',
+        worktreeId: 'wt-1'
+      }),
+      { preview: false, targetGroupId: 'group-1' }
+    )
+  })
+
+  it('normalizes worktree absolute paths to relative paths before opening', async () => {
+    const operations = makeOperations()
+
+    await openTabEntryWithOperations({
+      ...baseArgs,
+      classification: { kind: 'absolute-file', filePath: '/repo/src/index.ts' },
+      query: '/repo/src/index.ts',
+      operations
+    })
+
+    expect(operations.openFile).toHaveBeenCalledWith(
+      expect.objectContaining({
+        filePath: '/repo/src/index.ts',
+        relativePath: 'src/index.ts'
+      }),
+      { preview: false, targetGroupId: 'group-1' }
+    )
+  })
+
+  it('opens a typed project link that leads out of the project by its absolute path', async () => {
     const operations = makeOperations({
-      createWebRuntimeSessionBrowserTab: vi.fn().mockResolvedValue(false),
-      isWebRuntimeSessionActive: vi.fn().mockReturnValue(true)
+      statUserOpenedPath: vi.fn().mockResolvedValue({ isDirectory: false, escapesWorktree: true })
     })
 
     await openTabEntryWithOperations({
       ...baseArgs,
-      query: 'https://example.com',
-      activeRuntimeEnvironmentId: 'runtime-1',
+      classification: { kind: 'absolute-file', filePath: '/repo/docs-link/secret.md' },
+      query: '/repo/docs-link/secret.md',
       operations
     })
 
-    expect(operations.createWebRuntimeSessionBrowserTab).toHaveBeenCalledWith({
-      worktreeId: 'wt-1',
-      environmentId: 'runtime-1',
-      url: 'https://example.com/',
-      targetGroupId: 'group-1'
+    expect(operations.openFile).toHaveBeenCalledWith(
+      expect.objectContaining({
+        filePath: '/repo/docs-link/secret.md',
+        relativePath: '/repo/docs-link/secret.md'
+      }),
+      { preview: false, targetGroupId: 'group-1' }
+    )
+  })
+
+  it('rejects absolute paths when remote workspaces disallow them', async () => {
+    const operations = makeOperations()
+
+    await expect(
+      openTabEntryWithOperations({
+        ...baseArgs,
+        allowAbsolutePaths: false,
+        classification: { kind: 'absolute-file', filePath: '/tmp/notes.md' },
+        query: '/tmp/notes.md',
+        operations
+      })
+    ).rejects.toThrow(TAB_ENTRY_ABSOLUTE_PATH_REMOTE_BLOCKED_MESSAGE)
+
+    expect(operations.statUserOpenedPath).not.toHaveBeenCalled()
+    expect(operations.createRuntimePath).not.toHaveBeenCalled()
+    expect(operations.openFile).not.toHaveBeenCalled()
+  })
+
+  it('rejects Windows path syntax before touching a native POSIX path', async () => {
+    const operations = makeOperations()
+
+    await expect(
+      openTabEntryWithOperations({
+        ...baseArgs,
+        classification: { kind: 'absolute-file', filePath: 'C:\\tmp\\notes.md' },
+        query: 'C:\\tmp\\notes.md',
+        operations
+      })
+    ).rejects.toThrow('Enter an absolute path for this computer.')
+
+    expect(operations.statUserOpenedPath).not.toHaveBeenCalled()
+    expect(operations.openFile).not.toHaveBeenCalled()
+  })
+
+  it('normalizes and opens Windows drive paths on Windows', async () => {
+    const operations = makeOperations()
+
+    await openTabEntryWithOperations({
+      ...baseArgs,
+      localPlatform: 'windows',
+      getFileContext: () => ({ worktreePath: 'C:/repo', runtimeContext }),
+      classification: { kind: 'absolute-file', filePath: 'C:\\tmp\\notes.md' },
+      query: 'C:\\tmp\\notes.md',
+      operations
     })
-    expect(operations.createBrowserTab).toHaveBeenCalledWith('wt-1', 'https://example.com/', {
-      activate: true,
-      browserRuntimeEnvironmentId: null,
-      targetGroupId: 'group-1',
-      title: 'https://example.com/'
+
+    expect(operations.statUserOpenedPath).toHaveBeenCalledWith(runtimeContext, 'C:/tmp/notes.md')
+  })
+
+  it('stops after the file check when ownership becomes remote or ambiguous', async () => {
+    let releaseStat: (() => void) | undefined
+    const statResult = new Promise<{ isDirectory: boolean; escapesWorktree: boolean }>(
+      (resolve) => {
+        releaseStat = () => resolve({ isDirectory: false, escapesWorktree: false })
+      }
+    )
+    let allowed = true
+    const operations = makeOperations({
+      statUserOpenedPath: vi.fn(() => statResult),
+      assertAbsolutePathAllowed: vi.fn(() => {
+        if (!allowed) {
+          throw new Error(TAB_ENTRY_ABSOLUTE_PATH_REMOTE_BLOCKED_MESSAGE)
+        }
+      })
     })
+
+    const opening = openTabEntryWithOperations({
+      ...baseArgs,
+      classification: { kind: 'absolute-file', filePath: '/tmp/notes.md' },
+      query: '/tmp/notes.md',
+      operations
+    })
+    await vi.waitFor(() => expect(operations.statUserOpenedPath).toHaveBeenCalledTimes(1))
+    const rejection = expect(opening).rejects.toThrow(
+      TAB_ENTRY_ABSOLUTE_PATH_REMOTE_BLOCKED_MESSAGE
+    )
+    allowed = false
+    releaseStat?.()
+    await rejection
+
+    expect(operations.openFile).not.toHaveBeenCalled()
   })
 })

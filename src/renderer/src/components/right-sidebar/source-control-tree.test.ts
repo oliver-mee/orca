@@ -1,11 +1,14 @@
 import { describe, expect, it } from 'vitest'
-import type { GitBranchChangeEntry, GitStatusEntry } from '../../../../shared/types'
+import type { GitBranchChangeEntry } from '../../../../shared/git-diff-compare-types'
+import type { GitStatusEntry } from '../../../../shared/git-status-types'
 import {
   buildGitStatusSourceControlTree,
   buildSourceControlTree,
+  applyGitStatusEntryAreasToSourceControlTree,
   collectSourceControlTreeFileEntries,
   compactSourceControlTree,
-  flattenSourceControlTree
+  flattenSourceControlTree,
+  namespaceSourceControlTreeDirectoryKeys
 } from './source-control-tree'
 
 function entry(partial: Partial<GitStatusEntry> & { path: string }): GitStatusEntry {
@@ -34,6 +37,24 @@ describe('buildSourceControlTree', () => {
       'file:src/components/Button.tsx',
       'file:src/index.ts',
       'file:README.md'
+    ])
+  })
+
+  it('orders numbered sibling directories naturally, matching the file rows', () => {
+    const tree = buildSourceControlTree('unstaged', [
+      entry({ path: 'migrations/100 - b/a.sql' }),
+      entry({ path: 'migrations/9 - a/a.sql' }),
+      entry({ path: 'migrations/99 - c/a.sql' })
+    ])
+
+    expect(labels(flattenSourceControlTree(tree, new Set()))).toEqual([
+      'directory:migrations',
+      'directory:migrations/9 - a',
+      'file:migrations/9 - a/a.sql',
+      'directory:migrations/99 - c',
+      'file:migrations/99 - c/a.sql',
+      'directory:migrations/100 - b',
+      'file:migrations/100 - b/a.sql'
     ])
   })
 
@@ -137,5 +158,53 @@ describe('buildSourceControlTree', () => {
       'directory:src/renderer',
       'file:src/renderer/index.ts'
     ])
+  })
+
+  it('can namespace directory keys without changing file entry areas', () => {
+    const tree = compactSourceControlTree(
+      buildGitStatusSourceControlTree('unstaged', [
+        entry({
+          path: 'src/conflict.ts',
+          conflictKind: 'both_modified',
+          conflictStatus: 'unresolved'
+        })
+      ])
+    )
+
+    const namespaced = namespaceSourceControlTreeDirectoryKeys(tree, 'conflicts')
+    const rows = flattenSourceControlTree(namespaced, new Set())
+    const directory = rows.find((node) => node.type === 'directory')
+    const file = rows.find((node) => node.type === 'file')
+
+    expect(directory?.key).toBe('dir::conflicts::src')
+    expect(file?.key).toBe('unstaged::src/conflict.ts')
+    expect(file?.area).toBe('unstaged')
+  })
+
+  it('can preserve file node areas from mixed conflict section entries', () => {
+    const tree = compactSourceControlTree(
+      buildGitStatusSourceControlTree('unstaged', [
+        entry({
+          area: 'staged',
+          path: 'src/resolved.ts',
+          conflictKind: 'both_modified',
+          conflictStatus: 'resolved_locally'
+        })
+      ])
+    )
+
+    const rows = flattenSourceControlTree(
+      applyGitStatusEntryAreasToSourceControlTree(
+        namespaceSourceControlTreeDirectoryKeys(tree, 'conflicts')
+      ),
+      new Set()
+    )
+    const directory = rows.find((node) => node.type === 'directory')
+    const file = rows.find((node) => node.type === 'file')
+
+    expect(directory?.key).toBe('dir::conflicts::src')
+    expect(directory?.area).toBe('unstaged')
+    expect(file?.key).toBe('staged::src/resolved.ts')
+    expect(file?.area).toBe('staged')
   })
 })

@@ -1,3 +1,4 @@
+import { extractLeadingEnvAssignments } from './command-environment'
 // Why: keeping the base prompt and assembly here (in shared) lets both the
 // renderer (preview/tests) and main (actual generation) reach the exact same
 // string without duplicating the wording.
@@ -9,13 +10,20 @@ Rules:
 - First line: imperative mood, <= 72 chars, no trailing period.
 - Optional body: blank line, then wrapped at 72 chars explaining WHY.
 - Output ONLY the commit message - no preamble, no code fences, no quotes.
-- Do not include "Co-authored-by" trailers - Orca appends them after generation when configured.
+- Do not include "Co-authored-by" or other git trailers.
 
 Staged diff:
 \`\`\`diff
 {{DIFF}}
 \`\`\`
 `
+
+export {
+  cleanGeneratedCommitMessage,
+  excerptAgentFailureOutput,
+  sanitizeAgentFailureDetail,
+  stripPrefilledReasoningPreamble
+} from './commit-message-agent-output'
 
 /** Builds the final prompt sent to the agent. The custom suffix is appended verbatim
  *  when non-empty so the user can override style (Conventional Commits, gitmoji, …). */
@@ -124,44 +132,18 @@ export function truncateDiffForPrompt(
   return sections.map((section, i) => clipSectionOnLineBoundary(section, allocations[i])).join('')
 }
 
-/** Strips noise around the agent's output: surrounding whitespace, a single
- *  enclosing fenced code block, and lone "Generating…" preamble lines some
- *  CLIs print before the real answer. */
-export function cleanGeneratedCommitMessage(raw: string): string {
-  let text = raw.replace(/\r\n/g, '\n').trim()
-
-  // Why: real commit messages never start with an ellipsis or the word
-  // "Generating"/"Thinking" — those leak from CLIs that print a status line
-  // before the actual response.
-  const firstNewline = text.indexOf('\n')
-  if (firstNewline !== -1) {
-    const firstLine = text.slice(0, firstNewline)
-    if (/^(generating|thinking)\b/i.test(firstLine) || /^[.…]+$/.test(firstLine.trim())) {
-      text = text.slice(firstNewline + 1).trim()
-    }
-  }
-
-  const fence = /^```[a-zA-Z0-9_-]*\n([\s\S]*?)\n```$/
-  const fenced = text.match(fence)
-  if (fenced) {
-    text = fenced[1].trim()
-  }
-
-  // Why: some CLIs format a one-shot answer as a list item even when the
-  // prompt asks for raw text; a Git subject should not carry that marker.
-  text = text.replace(/^(\s*)(?:[-*•●]\s+|\d+[.)]\s+)/, '$1').trim()
-
-  return text
-}
-
-function stripAnsiControlSequences(value: string): string {
-  return value.replace(new RegExp(`${String.fromCharCode(27)}\\[[0-?]*[ -/]*[@-~]`, 'g'), '')
-}
-
 export const CUSTOM_PROMPT_PLACEHOLDER = '{prompt}'
 
+/** Source range of a token: [start, end) offsets into the original string.
+ * `divergesFromShell` marks a token this tokenizer cannot model faithfully for
+ * the target shell: an unquoted operator (`;&|<>`), a word-leading `#`
+ * comment, an expansion opener whose body can span tokens (backtick, `$(`,
+ * `${`, quoted or not), or a cmd single-quoted region (cmd has no
+ * single-quote syntax). Not recoverable from the token value alone. */
+export type CommandTokenSpan = { start: number; end: number; divergesFromShell: boolean }
+
 export type TokenizeCustomCommandResult =
-  | { ok: true; tokens: string[] }
+  | { ok: true; tokens: string[]; spans: CommandTokenSpan[] }
   | { ok: false; error: string }
 
 // Why: deliberately POSIX-shell-style only for *grouping* (single + double
@@ -170,21 +152,47 @@ export type TokenizeCustomCommandResult =
 // "spawn this exact CLI" — adding shell semantics on top would create
 // surprising behavior across platforms (especially Windows) and a security
 // surface we don't need.
-export function tokenizeCustomCommandTemplate(template: string): TokenizeCustomCommandResult {
+/**
+ * `'escape'` (default) is POSIX: a backslash quotes the next byte, so `foo\ bar`
+ * is one token. `'literal'` is for a command that will run on native Windows,
+ * where `\` is the path separator — eating it turns
+ * `C:\Windows\System32\powershell.exe` into `C:WindowsSystem32powershell.exe`,
+ * a path that then "cannot be found" (#11375).
+ *
+ * Opt-in rather than sniffed from `process.platform` here, because the same
+ * template can be parsed on one host and executed on another.
+ */
+export type CommandTemplateBackslash = 'escape' | 'literal'
+
+export function tokenizeCustomCommandTemplate(
+  template: string,
+  backslash: CommandTemplateBackslash = 'escape'
+): TokenizeCustomCommandResult {
+  const backslashEscapes = backslash === 'escape'
   const tokens: string[] = []
+  const spans: CommandTokenSpan[] = []
   let current = ''
   let inToken = false
+  let tokenStart = 0
+  let divergesFromShell = false
   let quote: '"' | "'" | null = null
   let i = 0
 
   while (i < template.length) {
     const ch = template[i]
     if (quote) {
-      if (ch === '\\' && quote === '"' && i + 1 < template.length) {
+      if (backslashEscapes && ch === '\\' && quote === '"' && i + 1 < template.length) {
+        // Why: inside double quotes the shell only consumes the backslash
+        // before these; elsewhere it stays a literal byte this tokenizer drops.
+        divergesFromShell ||= !'$`"\\'.includes(template[i + 1])
         current += template[i + 1]
         i += 2
         continue
       }
+      // Why: a `"` inside $(…) or `…` re-opens a nested quoting context in the
+      // real shell, so this tokenizer's word boundaries stop matching it.
+      divergesFromShell ||=
+        quote === '"' && (ch === '`' || (ch === '$' && '({'.includes(template[i + 1] ?? '\0')))
       if (ch === quote) {
         quote = null
         i++
@@ -200,13 +208,22 @@ export function tokenizeCustomCommandTemplate(template: string): TokenizeCustomC
 
     if (ch === '"' || ch === "'") {
       quote = ch
+      if (!inToken) {
+        tokenStart = i
+      }
       inToken = true
       i++
       continue
     }
 
-    if (ch === '\\' && i + 1 < template.length) {
+    if (backslashEscapes && ch === '\\' && i + 1 < template.length) {
+      // Why: an unquoted line continuation joins words the shell splits, so a
+      // selector can hide inside the joined token and skip the gap check.
+      divergesFromShell ||= template[i + 1] === '\n'
       current += template[i + 1]
+      if (!inToken) {
+        tokenStart = i
+      }
       inToken = true
       i += 2
       continue
@@ -215,13 +232,25 @@ export function tokenizeCustomCommandTemplate(template: string): TokenizeCustomC
     if (/\s/.test(ch)) {
       if (inToken) {
         tokens.push(current)
+        spans.push({ start: tokenStart, end: i, divergesFromShell })
         current = ''
         inToken = false
+        divergesFromShell = false
       }
       i++
       continue
     }
 
+    if (!inToken) {
+      tokenStart = i
+    }
+    // Why: a trailing unpaired escape swallows whatever a consumer appends
+    // after the base, so the base is not safe to build on.
+    divergesFromShell ||= backslashEscapes && ch === '\\' && i + 1 >= template.length
+    divergesFromShell ||=
+      ';&|<>`'.includes(ch) ||
+      (ch === '#' && !inToken) ||
+      (ch === '$' && '({\'"'.includes(template[i + 1] ?? '\0'))
     current += ch
     inToken = true
     i++
@@ -232,12 +261,19 @@ export function tokenizeCustomCommandTemplate(template: string): TokenizeCustomC
   }
   if (inToken) {
     tokens.push(current)
+    spans.push({ start: tokenStart, end: template.length, divergesFromShell })
   }
-  return { ok: true, tokens }
+  return { ok: true, tokens, spans }
 }
 
 export type CustomCommandPlan =
-  | { ok: true; binary: string; args: string[]; stdinPayload: string | null }
+  | {
+      ok: true
+      binary: string
+      args: string[]
+      stdinPayload: string | null
+      env?: Record<string, string>
+    }
   | { ok: false; error: string }
 
 /**
@@ -249,15 +285,20 @@ export type CustomCommandPlan =
  * substituted prompt is always passed as a single argument regardless of
  * whether the template wrote `{prompt}` or `"{prompt}"`.
  */
-export function planCustomCommand(template: string, prompt: string): CustomCommandPlan {
-  const tokenized = tokenizeCustomCommandTemplate(template)
+export function planCustomCommand(
+  template: string,
+  prompt: string,
+  backslash: CommandTemplateBackslash = 'escape'
+): CustomCommandPlan {
+  const tokenized = tokenizeCustomCommandTemplate(template, backslash)
   if (!tokenized.ok) {
     return { ok: false, error: tokenized.error }
   }
   if (tokenized.tokens.length === 0) {
     return { ok: false, error: 'Custom command is empty.' }
   }
-  const [binary, ...rest] = tokenized.tokens
+  const { env, rest: commandTokens } = extractLeadingEnvAssignments(tokenized.tokens)
+  const [binary, ...rest] = commandTokens
   if (!binary) {
     return { ok: false, error: 'Custom command must start with a binary name.' }
   }
@@ -266,68 +307,15 @@ export function planCustomCommand(template: string, prompt: string): CustomComma
     token.includes(CUSTOM_PROMPT_PLACEHOLDER)
       ? token.split(CUSTOM_PROMPT_PLACEHOLDER).join(prompt)
       : token
-  const usesPlaceholder = tokenized.tokens.some((t) => t.includes(CUSTOM_PROMPT_PLACEHOLDER))
+  const usesPlaceholder = commandTokens.some((t) => t.includes(CUSTOM_PROMPT_PLACEHOLDER))
   if (usesPlaceholder) {
     return {
       ok: true,
       binary: substitute(binary),
       args: rest.map(substitute),
-      stdinPayload: null
+      stdinPayload: null,
+      ...(env ? { env } : {})
     }
   }
-  return { ok: true, binary, args: rest, stdinPayload: prompt }
-}
-
-// Why: agent CLIs (Codex, Claude) prefix their stdout/stderr with config
-// preamble, the echoed prompt, and hook lifecycle messages. When something
-// fails, the actionable error is buried far below all of that. This pulls
-// out the real message so the user sees something legible instead of a
-// dump of the agent's runtime state.
-export function extractAgentErrorMessage(stdout: string, stderr: string): string | null {
-  const combined = stripAnsiControlSequences(`${stdout}\n${stderr}`)
-  const lines = combined.split(/\r?\n/)
-
-  // Pass 1: look for an `ERROR:`/`Error:` line carrying a JSON payload.
-  // Walk from the end so the most recent (and usually most meaningful)
-  // error wins when an agent prints multiple.
-  for (let i = lines.length - 1; i >= 0; i--) {
-    const line = lines[i]
-    const match = /^\s*(?:ERROR|Error(?:\s+during\s+[^:]+)?)\s*:\s*(.+)$/i.exec(line)
-    if (!match) {
-      continue
-    }
-    const payload = match[1].trim()
-    if (payload.startsWith('{')) {
-      try {
-        const parsed = JSON.parse(payload) as {
-          message?: string
-          error?: { message?: string }
-        }
-        const inner = parsed.error?.message ?? parsed.message
-        if (typeof inner === 'string' && inner.trim().length > 0) {
-          return inner.trim()
-        }
-      } catch {
-        // Fall through to using the raw payload below.
-      }
-    }
-    if (payload.length > 0) {
-      return payload
-    }
-  }
-
-  const compact = combined.replace(/([A-Za-z])\r?\n\s*([A-Za-z_])/g, '$1$2').replace(/\s+/g, ' ')
-  const errorCodeMatch = /\bError code:\s*\d+\s*-\s*(.+)$/i.exec(compact)
-  if (errorCodeMatch) {
-    const payload = errorCodeMatch[1].trim()
-    const messageMatch = /['"]message['"]\s*:\s*['"]([^'"]+)['"]/i.exec(payload)
-    if (messageMatch?.[1]?.trim()) {
-      return messageMatch[1].trim()
-    }
-    if (payload.length > 0) {
-      return payload
-    }
-  }
-
-  return null
+  return { ok: true, binary, args: rest, stdinPayload: prompt, ...(env ? { env } : {}) }
 }

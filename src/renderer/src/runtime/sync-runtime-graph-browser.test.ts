@@ -1,9 +1,9 @@
 import { describe, expect, it } from 'vitest'
+import { buildMobileSessionTabSnapshots } from './sync-runtime-graph/mobile-session-snapshots'
 import {
-  buildMobileSessionTabSnapshots,
   getRuntimeMobileSessionSyncKey,
   runtimeMobileSessionSyncKeysEqual
-} from './sync-runtime-graph'
+} from './sync-runtime-graph/sync-key'
 import type { AppState } from '../store/types'
 
 function makeState(overrides: Partial<AppState> = {}): AppState {
@@ -20,6 +20,7 @@ function makeState(overrides: Partial<AppState> = {}): AppState {
     activeBrowserTabIdByWorktree: {},
     browserTabsByWorktree: {},
     browserPagesByWorkspace: {},
+    browserCertificateFailuresByPageId: {},
     openFiles: [],
     editorDrafts: {},
     activeTabId: null,
@@ -103,7 +104,19 @@ describe('browser mobile session sync', () => {
             createdAt: 1
           }
         ]
-      } as unknown as AppState['browserPagesByWorkspace']
+      } as unknown as AppState['browserPagesByWorkspace'],
+      browserCertificateFailuresByPageId: {
+        'page-1': {
+          challengeId: 'challenge-1',
+          browserPageId: 'page-1',
+          errorCode: -202,
+          error: 'ERR_CERT_AUTHORITY_INVALID',
+          origin: 'https://localhost:3443',
+          displayHost: 'localhost:3443',
+          canProceed: true,
+          observedAt: 123
+        }
+      }
     })
 
     expect(buildMobileSessionTabSnapshots(state)[0]?.tabs).toMatchObject([
@@ -115,9 +128,38 @@ describe('browser mobile session sync', () => {
         title: 'Example Page',
         url: 'https://example.com/path',
         canGoBack: true,
+        certificateFailure: {
+          challengeId: 'challenge-1',
+          browserPageId: 'page-1'
+        },
         isActive: true
       }
     ])
+  })
+
+  it('does not resurrect a stale workspace failure after the active page clears it', () => {
+    const staleError = {
+      code: -202,
+      description: 'ERR_CERT_AUTHORITY_INVALID',
+      validatedUrl: 'https://localhost:3443/'
+    }
+    const workspace = { ...makeBrowserWorkspace(), loadError: staleError }
+    const activePage = {
+      ...workspace,
+      id: 'page-1',
+      workspaceId: workspace.id,
+      loadError: null
+    }
+    const state = makeState({
+      activeBrowserTabIdByWorktree: { 'wt-1': workspace.id },
+      browserTabsByWorktree: { 'wt-1': [workspace] },
+      browserPagesByWorkspace: { [workspace.id]: [activePage] }
+    })
+
+    expect(buildMobileSessionTabSnapshots(state)[0]?.tabs[0]).toMatchObject({
+      type: 'browser',
+      loadError: null
+    })
   })
 
   it('publishes fallback browser tabs by workspace id when no unified tab exists', () => {

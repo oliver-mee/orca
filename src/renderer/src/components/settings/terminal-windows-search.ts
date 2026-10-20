@@ -1,7 +1,27 @@
-import type { SettingsSearchEntry } from './settings-search'
 import { translate } from '@/i18n/i18n'
 import { translateSearchKeyword } from './settings-search-keywords'
 import { createLocalizedCatalog } from '@/i18n/localized-catalog'
+
+export const getTerminalWindowsAdministratorSearchEntry = createLocalizedCatalog(() => [
+  {
+    title: translate('settings.terminal.windows.administratorLabel', 'Administrator mode'),
+    description: translate(
+      'settings.terminal.windows.administratorSearchDescription',
+      'See Orca’s Windows permissions or restart with administrator approval.'
+    ),
+    keywords: [
+      ...getTerminalWindowsShellSearchEntry()[0].keywords,
+      ...translateSearchKeyword('settings.terminal.windows.keywordAdmin', 'admin'),
+      ...translateSearchKeyword('settings.terminal.windows.keywordAdministrator', 'administrator'),
+      ...translateSearchKeyword('settings.terminal.windows.keywordElevated', 'elevated'),
+      ...translateSearchKeyword('settings.terminal.windows.keywordPermissions', 'permissions'),
+      ...translateSearchKeyword('settings.terminal.windows.keywordRestart', 'restart'),
+      ...translateSearchKeyword('settings.terminal.windows.keywordUac', 'uac', {
+        englishOnly: true
+      })
+    ]
+  }
+])
 
 export const getTerminalWindowsShellSearchEntry = createLocalizedCatalog(() => [
   {
@@ -47,24 +67,12 @@ export const getTerminalWindowsShellSearchEntry = createLocalizedCatalog(() => [
         'git bash'
       ),
       ...translateSearchKeyword(
-        'auto.components.settings.terminal.windows.search.6e3adf4cba',
-        'wsl'
-      ),
-      ...translateSearchKeyword(
-        'auto.components.settings.terminal.windows.search.02c772582a',
-        'linux'
-      ),
-      ...translateSearchKeyword(
         'auto.components.settings.terminal.windows.search.5a2db98d23',
         'bash'
       ),
       ...translateSearchKeyword(
         'auto.components.settings.terminal.windows.search.07ec155fb6',
         'bash.exe'
-      ),
-      ...translateSearchKeyword(
-        'auto.components.settings.terminal.windows.search.4ee2579c32',
-        'ubuntu'
       )
     ]
   }
@@ -117,57 +125,6 @@ export const getTerminalWindowsPowershellImplementationSearchEntry = createLocal
   }
 ])
 
-export const getTerminalWindowsWslDistroSearchEntry = createLocalizedCatalog(() => [
-  {
-    title: translate(
-      'auto.components.settings.terminal.windows.search.1f402b3651',
-      'WSL Distribution'
-    ),
-    description: translate(
-      'auto.components.settings.terminal.windows.search.978457945b',
-      'Choose which WSL distribution new WSL terminals and local agent scans use.'
-    ),
-    keywords: [
-      ...translateSearchKeyword(
-        'auto.components.settings.terminal.windows.search.e7d2793b03',
-        'terminal'
-      ),
-      ...translateSearchKeyword(
-        'auto.components.settings.terminal.windows.search.28ff08ed35',
-        'windows'
-      ),
-      ...translateSearchKeyword(
-        'auto.components.settings.terminal.windows.search.6e3adf4cba',
-        'wsl'
-      ),
-      ...translateSearchKeyword(
-        'auto.components.settings.terminal.windows.search.02c772582a',
-        'linux'
-      ),
-      ...translateSearchKeyword(
-        'auto.components.settings.terminal.windows.search.2b4a340ce0',
-        'distribution'
-      ),
-      ...translateSearchKeyword(
-        'auto.components.settings.terminal.windows.search.5074ad8b5f',
-        'distro'
-      ),
-      ...translateSearchKeyword(
-        'auto.components.settings.terminal.windows.search.4ee2579c32',
-        'ubuntu'
-      ),
-      ...translateSearchKeyword(
-        'auto.components.settings.terminal.windows.search.fc564eadaf',
-        'debian'
-      ),
-      ...translateSearchKeyword(
-        'auto.components.settings.terminal.windows.search.04994f6929',
-        'default'
-      )
-    ]
-  }
-])
-
 export const getTerminalRightClickToPasteSearchEntry = createLocalizedCatalog(() => [
   {
     title: translate(
@@ -176,16 +133,12 @@ export const getTerminalRightClickToPasteSearchEntry = createLocalizedCatalog(()
     ),
     description: translate(
       'auto.components.settings.terminal.windows.search.8ba875c132',
-      'On Windows, right-click pastes the clipboard into the terminal. Use Ctrl+right-click to open the context menu.'
+      'Right-click pastes the clipboard into the terminal. Use Ctrl+right-click to open the context menu.'
     ),
     keywords: [
       ...translateSearchKeyword(
         'auto.components.settings.terminal.windows.search.e7d2793b03',
         'terminal'
-      ),
-      ...translateSearchKeyword(
-        'auto.components.settings.terminal.windows.search.28ff08ed35',
-        'windows'
       ),
       ...translateSearchKeyword(
         'auto.components.settings.terminal.windows.search.e55186fe2b',
@@ -201,11 +154,4 @@ export const getTerminalRightClickToPasteSearchEntry = createLocalizedCatalog(()
       )
     ]
   }
-])
-
-export const getTerminalWindowsSearchEntries = createLocalizedCatalog((): SettingsSearchEntry[] => [
-  ...getTerminalWindowsShellSearchEntry(),
-  ...getTerminalWindowsWslDistroSearchEntry(),
-  ...getTerminalWindowsPowershellImplementationSearchEntry(),
-  ...getTerminalRightClickToPasteSearchEntry()
 ])

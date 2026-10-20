@@ -17,13 +17,15 @@ type ScriptKind = OrcaHookScriptKind
 const SCRIPT_KIND_LABEL: Record<ScriptKind, string> = {
   setup: 'setup script',
   archive: 'archive script',
-  issueCommand: 'issue command'
+  issueCommand: 'issue command',
+  vmRecipe: 'VM recipe'
 }
 
 const SCRIPT_KIND_TRIGGER: Record<ScriptKind, string> = {
   setup: 'when this workspace is created',
   archive: 'when this workspace is removed',
-  issueCommand: 'when this workspace launches with a linked issue'
+  issueCommand: 'when this workspace launches with a linked issue',
+  vmRecipe: 'before provisioning a VM'
 }
 
 const OrcaYamlTrustDialog = React.memo(function OrcaYamlTrustDialog() {
@@ -56,7 +58,9 @@ const OrcaYamlTrustDialog = React.memo(function OrcaYamlTrustDialog() {
       ? 'archive'
       : modalData.scriptKind === 'issueCommand'
         ? 'issueCommand'
-        : 'setup'
+        : modalData.scriptKind === 'vmRecipe'
+          ? 'vmRecipe'
+          : 'setup'
   const scriptContent = typeof modalData.scriptContent === 'string' ? modalData.scriptContent : ''
   const contentHash = typeof modalData.contentHash === 'string' ? modalData.contentHash : ''
   const previouslyApproved = modalData.previouslyApproved === true
@@ -100,7 +104,7 @@ const OrcaYamlTrustDialog = React.memo(function OrcaYamlTrustDialog() {
 
   return (
     <Dialog open={isOpen} onOpenChange={handleOpenChange}>
-      <DialogContent className="max-w-md sm:max-w-md" showCloseButton={false}>
+      <DialogContent surface="security" className="max-w-md sm:max-w-md" showCloseButton={false}>
         <DialogHeader>
           <DialogTitle className="text-sm">
             {previouslyApproved
@@ -132,7 +136,7 @@ const OrcaYamlTrustDialog = React.memo(function OrcaYamlTrustDialog() {
                 {translate(
                   'auto.components.sidebar.OrcaYamlTrustDialog.aa3ffb33fb',
                   "This repository's"
-                )}
+                )}{' '}
                 <code>
                   {translate('auto.components.sidebar.OrcaYamlTrustDialog.79afc6772b', 'orca.yaml')}
                 </code>{' '}
@@ -144,7 +148,7 @@ const OrcaYamlTrustDialog = React.memo(function OrcaYamlTrustDialog() {
                 {translate(
                   'auto.components.sidebar.OrcaYamlTrustDialog.bf800b7e04',
                   '. Only run if you trust'
-                )}
+                )}{' '}
                 {repoName}.
               </>
             )}
@@ -186,12 +190,11 @@ const OrcaYamlTrustDialog = React.memo(function OrcaYamlTrustDialog() {
             onChange={(event) => setAlwaysTrust(event.target.checked)}
           />
           <span className="text-xs font-medium text-foreground">
-            {translate('auto.components.sidebar.OrcaYamlTrustDialog.531689199b', 'Always trust')}
+            {translate('auto.components.sidebar.OrcaYamlTrustDialog.531689199b', 'Always trust')}{' '}
             <code>
               {translate('auto.components.sidebar.OrcaYamlTrustDialog.79afc6772b', 'orca.yaml')}
             </code>{' '}
-            {translate('auto.components.sidebar.OrcaYamlTrustDialog.c494b3ccb1', 'in')}
-            {repoName}
+            {translate('auto.components.sidebar.OrcaYamlTrustDialog.c494b3ccb1', 'in')} {repoName}
           </span>
         </label>
 

@@ -1,10 +1,32 @@
-import type { Repo } from '../../../../shared/types'
+import type { Repo } from '../../../../shared/repo-types'
 import type { SettingsSearchEntry } from './settings-search'
 import { translate } from '@/i18n/i18n'
 import { translateSearchKeyword } from './settings-search-keywords'
 
 export function getRepositoryGitWorktreeSearchEntries(repo: Repo): SettingsSearchEntry[] {
   return [
+    {
+      title: translate(
+        'auto.components.settings.repository.search.externalWorktrees',
+        'External worktrees'
+      ),
+      description: translate(
+        'auto.components.settings.repository.search.externalWorktreesDescription',
+        'Override whether worktrees created outside Orca appear for this project.'
+      ),
+      keywords: [
+        repo.displayName,
+        ...translateSearchKeyword(
+          'auto.components.settings.repository.search.external',
+          'external'
+        ),
+        ...translateSearchKeyword(
+          'auto.components.settings.repository.search.visibility',
+          'visibility'
+        ),
+        ...translateSearchKeyword('auto.components.settings.repository.search.sidebar', 'sidebar')
+      ]
+    },
     {
       title: translate(
         'auto.components.settings.repository.search.094adbe930',
@@ -100,14 +122,17 @@ export function getRepositoryGitWorktreeSearchEntries(repo: Repo): SettingsSearc
     {
       title: translate(
         'auto.components.settings.repository.search.01b3377ebc',
-        'Worktree Symlinks'
+        'Worktree Shared Paths'
       ),
       description: translate(
         'auto.components.settings.repository.search.ed885e589f',
-        'Paths to symlink from the primary checkout into newly created worktrees.'
+        'Paths to materialize from the primary checkout into newly created worktrees.'
       ),
       keywords: [
         repo.displayName,
+        ...translateSearchKeyword('auto.components.settings.repository.search.apfs', 'apfs'),
+        ...translateSearchKeyword('auto.components.settings.repository.search.clone', 'clone'),
+        ...translateSearchKeyword('auto.components.settings.repository.search.copy', 'copy'),
         ...translateSearchKeyword(
           'auto.components.settings.repository.search.c06adcf136',
           'symlink'

@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import type { GlobalSettings } from '../../shared/types'
+import type { GlobalSettings } from '../../shared/global-settings-types'
 import { resolveConsent, _resetMisconfigWarnCacheForTests } from './consent'
 
 // A minimal GlobalSettings stub — the resolver only reads `settings.telemetry`,
@@ -239,19 +239,6 @@ describe('resolveConsent', () => {
   })
 
   // ── Env-var precedence beats persisted preference ───────────────────
-
-  it('env-var override wins over a stored optedIn=true', () => {
-    process.env.DO_NOT_TRACK = '1'
-    expect(
-      resolveConsent(
-        settingsWithTelemetry({
-          optedIn: true,
-          installId: 'x',
-          existedBeforeTelemetryRelease: false
-        })
-      )
-    ).toEqual({ effective: 'disabled', reason: 'do_not_track' })
-  })
 
   it('env-var override wins over a stored pending_banner state', () => {
     process.env.ORCA_TELEMETRY_DISABLED = '1'

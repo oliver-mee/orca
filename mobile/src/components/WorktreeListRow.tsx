@@ -1,10 +1,17 @@
-import { Bell, GitPullRequest } from 'lucide-react-native'
+import { memo } from 'react'
+import { Bell, ChevronDown, ChevronRight, GitBranch, GitPullRequest } from 'lucide-react-native'
 import { Pressable, StyleSheet, Text, View } from 'react-native'
-import type { RepoIcon } from '../../../src/shared/repo-icon'
-import type { RuntimeWorktreeAgentRow } from '../../../src/shared/runtime-types'
+import type { MobileRenderableRepoIcon } from '../host-screen/host-screen-reply-schema'
 import { triggerMediumImpact } from '../platform/haptics'
-import { colors, spacing, typography } from '../theme/mobile-theme'
+import { colors, radii, spacing, typography } from '../theme/mobile-theme'
+import type { Worktree } from '../worktree/workspace-list-types'
+import type { WorktreeCardDetails } from '../../../src/shared/worktree/card-properties'
+import { isRemoteExecutionHostId } from '../../../src/shared/execution-host'
+import type { AgentActivityDisplayMode } from '../../../src/shared/ui-chrome-types'
+import { areStructurallyEqual } from '../worktree/structural-equality'
+import { getWorktreeMetaGlyphPresence } from '../worktree/worktree-meta-glyph-presence'
 import { AgentSpinner } from './AgentSpinner'
+import { HostKindIcon } from './HostKindIcon'
 import { MobileRepoIcon } from './MobileRepoIcon'
 import { WorktreeAgentList } from './WorktreeAgentList'
 import { WorktreeMetaGlyphs, prStateColor } from './WorktreeMetaGlyphs'
@@ -15,70 +22,81 @@ function displayBranch(branch: string): string {
   return branch.replace(/^refs\/heads\//, '')
 }
 
-// Minimal row shape needed for rendering — a structural subset of the screen's
-// Worktree so this component stays decoupled from the screen's local type.
-export type WorktreeListRowItem = {
-  worktreeId: string
-  repo: string
-  branch: string
-  displayName: string
-  liveTerminalCount: number
-  preview: string
-  unread: boolean
-  isActive?: boolean
-  linkedPR: { number: number; state: string } | null
-  linkedIssue?: number | null
-  linkedLinearIssue?: string | null
-  linkedGitLabMR?: number | null
-  linkedGitLabIssue?: number | null
-  comment?: string
-  agents?: RuntimeWorktreeAgentRow[]
-}
-
 type WorktreeRollupStatus = 'working' | 'active' | 'permission' | 'done' | 'inactive'
 
-type Props<T extends WorktreeListRowItem> = {
-  item: T
+type Props = {
+  item: Worktree
   isReadOnly: boolean
   now: number
   repoColor: string
-  repoIcon?: RepoIcon | null
+  repoIcon?: MobileRenderableRepoIcon | null
   // When the list is already grouped under this repo's section header, the row
   // omits its own repo icon+name to avoid the redundant "📁 orca" on every row.
   hideRepo?: boolean
+  /** What the desktop's shared Card layout and properties show, and where identity goes. */
+  cardDetails: WorktreeCardDetails
+  agentActivityDisplayMode: AgentActivityDisplayMode
   status: WorktreeRollupStatus
-  onPress: (item: T) => void
-  onLongPress: (item: T) => void
+  onPress: (item: Worktree) => void
+  onAgentPress?: (item: Worktree, paneKey: string) => void
+  statusLive?: boolean
+  onLongPress?: (item: Worktree) => void
+  onToggleLineage?: (item: Worktree) => void
 }
 
-export function WorktreeListRow<T extends WorktreeListRowItem>({
+function WorktreeListRowComponent({
   item,
   isReadOnly,
   now,
   repoColor,
   repoIcon,
   hideRepo = false,
+  cardDetails,
+  agentActivityDisplayMode,
   status,
   onPress,
-  onLongPress
-}: Props<T>) {
+  onAgentPress,
+  statusLive,
+  onLongPress,
+  onToggleLineage
+}: Props) {
+  const isFolderWorkspace = item.workspaceKind === 'folder-workspace'
+  const folderMeta = item.comment?.trim() || item.path || 'Folder'
+  const metaText = isFolderWorkspace ? folderMeta : displayBranch(item.branch)
+  const lineageDepth = Math.max(0, item.lineageDepth ?? 0)
+  const lineageChildCount = item.lineageChildCount ?? 0
+  const shouldHideRepo = hideRepo && !item.showProjectName
+  const showRepoChip = cardDetails.repoInTitle && !shouldHideRepo && !isFolderWorkspace
+  const showRepoInMetaRow = !cardDetails.repoInTitle && !shouldHideRepo
+  const hostId = item.hostContextHostId ?? item.hostId
+  const hostAccessibilityLabel = [item.hostContextLabel, item.hostContextHealthLabel]
+    .filter(Boolean)
+    .join(', ')
+  // Why: the desktop's compact card keeps an icon-only glyph for remote projects after the host badge goes.
+  const showHostGlyph = !cardDetails.metaRow && isRemoteExecutionHostId(hostId)
+
   return (
     <Pressable
       style={({ pressed }) => [
         styles.worktreeRow,
+        lineageDepth > 0 && { paddingLeft: spacing.lg + lineageDepth * 18 },
         item.isActive && styles.worktreeRowActive,
         pressed && styles.worktreeRowPressed
       ]}
       disabled={isReadOnly}
       onPress={() => onPress(item)}
-      onLongPress={() => {
-        triggerMediumImpact()
-        onLongPress(item)
-      }}
+      onLongPress={
+        onLongPress
+          ? () => {
+              triggerMediumImpact()
+              onLongPress(item)
+            }
+          : undefined
+      }
       delayLongPress={400}
     >
       <View style={styles.indicatorCol}>
-        <AgentSpinner status={status} />
+        <AgentSpinner status={status} workingMode={item.workingMode} />
         {item.unread && (
           <Bell
             size={10}
@@ -91,6 +109,16 @@ export function WorktreeListRow<T extends WorktreeListRowItem>({
 
       <View style={styles.worktreeMain}>
         <View style={styles.worktreeNameRow}>
+          {showHostGlyph && (
+            <View accessibilityLabel={hostAccessibilityLabel || 'Remote host'}>
+              <HostKindIcon hostId={hostId} size={11} />
+            </View>
+          )}
+          {showRepoChip && (
+            <View style={styles.repoChip} accessibilityLabel={`Project ${item.repo}`}>
+              <MobileRepoIcon repoIcon={repoIcon} size={11} color={repoColor} />
+            </View>
+          )}
           <Text
             style={[
               styles.worktreeName,
@@ -101,7 +129,7 @@ export function WorktreeListRow<T extends WorktreeListRowItem>({
           >
             {item.displayName || item.repo}
           </Text>
-          {item.linkedPR && (
+          {cardDetails.pr && item.linkedPR && (
             <View style={styles.prBadge}>
               <GitPullRequest size={10} color={prStateColor(item.linkedPR.state)} />
               <Text style={[styles.prNumber, { color: prStateColor(item.linkedPR.state) }]}>
@@ -109,34 +137,84 @@ export function WorktreeListRow<T extends WorktreeListRowItem>({
               </Text>
             </View>
           )}
-          <WorktreeMetaGlyphs
-            comment={item.comment}
-            linkedLinearIssue={item.linkedLinearIssue}
-            linkedGitLabMR={item.linkedGitLabMR}
-            linkedIssue={item.linkedIssue}
-            linkedGitLabIssue={item.linkedGitLabIssue}
-          />
-        </View>
-        <View style={styles.worktreeMetaRow}>
-          {/* Repo glyph+name only when not already grouped under this repo;
-              MobileRepoIcon falls back to a Folder (matching desktop's default)
-              rather than a bare colored dot. */}
-          {!hideRepo && (
-            <>
-              <MobileRepoIcon repoIcon={repoIcon} size={11} color={repoColor} />
-              <Text style={styles.repoName} numberOfLines={1}>
-                {item.repo}
-              </Text>
-            </>
+          {isFolderWorkspace && (
+            <View style={styles.folderBadge}>
+              <Text style={styles.folderBadgeText}>Folder</Text>
+            </View>
           )}
-          <Text style={styles.branchName} numberOfLines={1}>
-            {displayBranch(item.branch)}
-          </Text>
+          <WorktreeMetaGlyphs presence={getWorktreeMetaGlyphPresence(item, cardDetails)} />
         </View>
+        {cardDetails.metaRow && (
+          <View style={styles.worktreeMetaRow}>
+            {lineageDepth > 0 && (
+              <View style={styles.childBadge}>
+                <GitBranch size={10} color={colors.textMuted} />
+                <Text style={styles.childBadgeText}>Child</Text>
+              </View>
+            )}
+            {cardDetails.host && item.hostContextLabel ? (
+              <View
+                style={[styles.childBadge, styles.hostBadge]}
+                accessibilityLabel={hostAccessibilityLabel}
+              >
+                <HostKindIcon hostId={hostId} size={10} />
+                <Text style={[styles.childBadgeText, styles.hostBadgeText]} numberOfLines={1}>
+                  {item.hostContextLabel}
+                </Text>
+                {/* Why separate Text: the name truncates first so the health word stays readable. */}
+                {item.hostContextHealthLabel ? (
+                  <Text style={[styles.childBadgeText, styles.hostHealthText]}>
+                    {`· ${item.hostContextHealthLabel}`}
+                  </Text>
+                ) : null}
+              </View>
+            ) : null}
+            {/* Repo glyph+name only when not grouped under this repo and the title has no chip;
+                MobileRepoIcon falls back to a Folder (matching desktop's default). */}
+            {showRepoInMetaRow && (
+              <>
+                <MobileRepoIcon repoIcon={repoIcon} size={11} color={repoColor} />
+                <Text style={styles.repoName} numberOfLines={1}>
+                  {item.repo}
+                </Text>
+              </>
+            )}
+            <Text style={styles.branchName} numberOfLines={1}>
+              {metaText}
+            </Text>
+          </View>
+        )}
         {/* Only agents get a secondary activity line, matching desktop. A plain
             terminal's shell-output tail is intentionally not surfaced here. */}
-        {item.agents && item.agents.length > 0 ? (
-          <WorktreeAgentList agents={item.agents} now={now} unvisited={item.unread} />
+        {cardDetails.inlineAgents && item.agents && item.agents.length > 0 ? (
+          <WorktreeAgentList
+            agents={item.agents}
+            now={now}
+            unvisited={item.unread}
+            statusLive={statusLive}
+            isReadOnly={isReadOnly}
+            onAgentPress={onAgentPress ? (paneKey) => onAgentPress(item, paneKey) : undefined}
+            fullList={agentActivityDisplayMode === 'full'}
+          />
+        ) : null}
+        {lineageChildCount > 0 && onToggleLineage ? (
+          <Pressable
+            style={styles.lineageToggle}
+            onPress={(event) => {
+              event.stopPropagation()
+              onToggleLineage(item)
+            }}
+          >
+            {item.lineageCollapsed ? (
+              <ChevronRight size={12} color={colors.textSecondary} />
+            ) : (
+              <ChevronDown size={12} color={colors.textSecondary} />
+            )}
+            <GitBranch size={12} color={colors.textSecondary} />
+            <Text style={styles.lineageToggleText}>
+              {lineageChildCount} {lineageChildCount === 1 ? 'child' : 'children'}
+            </Text>
+          </Pressable>
         ) : null}
       </View>
 
@@ -147,12 +225,15 @@ export function WorktreeListRow<T extends WorktreeListRowItem>({
   )
 }
 
+export const WorktreeListRow = memo(WorktreeListRowComponent, areStructurallyEqual)
+
 const styles = StyleSheet.create({
   worktreeRow: {
     flexDirection: 'row',
     alignItems: 'flex-start',
     paddingVertical: spacing.sm + 2,
-    paddingHorizontal: spacing.lg,
+    paddingLeft: spacing.lg,
+    paddingRight: spacing.lg,
     // Reserve the active accent bar width so active/inactive rows align.
     borderLeftWidth: 2,
     borderLeftColor: 'transparent'
@@ -212,6 +293,27 @@ const styles = StyleSheet.create({
     fontSize: 10,
     color: colors.textSecondary
   },
+  // Why: matches the desktop's compact repo chip, a small framed icon ahead of the title.
+  repoChip: {
+    width: 16,
+    height: 16,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: 4,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: colors.borderSubtle,
+    backgroundColor: colors.bgRaised
+  },
+  folderBadge: {
+    backgroundColor: colors.bgRaised,
+    paddingHorizontal: 5,
+    paddingVertical: 1,
+    borderRadius: 4
+  },
+  folderBadgeText: {
+    fontSize: 10,
+    color: colors.textSecondary
+  },
   worktreeMetaRow: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -227,7 +329,48 @@ const styles = StyleSheet.create({
     fontSize: 11,
     color: colors.textMuted,
     fontFamily: typography.monoFamily,
+    // Why: path takes only leftover space so badges truncate last.
+    flex: 1
+  },
+  childBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 3,
+    backgroundColor: colors.bgRaised,
+    paddingHorizontal: 5,
+    paddingVertical: 1,
+    borderRadius: 4
+  },
+  childBadgeText: {
+    fontSize: 10,
+    color: colors.textMuted
+  },
+  // Why the cap is on the name, not the badge: a health word after a long name must stay readable.
+  hostBadge: {
     flexShrink: 1
+  },
+  hostBadgeText: {
+    flexShrink: 1,
+    maxWidth: 100
+  },
+  hostHealthText: {
+    flexShrink: 0
+  },
+  lineageToggle: {
+    alignSelf: 'flex-start',
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    marginTop: spacing.xs,
+    backgroundColor: colors.bgRaised,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: radii.button
+  },
+  lineageToggleText: {
+    fontSize: 11,
+    color: colors.textSecondary,
+    fontWeight: '600'
   },
   terminalCount: {
     fontSize: typography.metaSize,

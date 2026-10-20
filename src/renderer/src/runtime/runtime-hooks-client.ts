@@ -1,6 +1,18 @@
-import type { GlobalSettings, OrcaHooks } from '../../../shared/types'
+import type { OrcaHooks } from '../../../shared/orca-yaml-hook-types'
+import type { ExecutionHostId } from '../../../shared/execution-host'
 import type { SetupScriptImportCandidate } from '../../../shared/setup-script-imports'
-import { callRuntimeRpc, getActiveRuntimeTarget } from './runtime-rpc-client'
+import { callRuntimeRpc } from './runtime-rpc-client'
+import { ipcOrRuntimeTargetForHostId } from './runtime-client-target'
+import type { RuntimeClientTarget } from '../../../shared/runtime-client-target'
+
+/** The repo's own host: a server's runtime, or this app (with `hostId`) for local and SSH repos. */
+function getHookInspectionTarget(hostId: ExecutionHostId): RuntimeClientTarget {
+  const target = ipcOrRuntimeTargetForHostId(hostId)
+  if (!target) {
+    throw new Error('The project host is unresolved.')
+  }
+  return target
+}
 
 export type HookCheckResult = {
   status?: 'ok' | 'error'
@@ -19,12 +31,12 @@ export type IssueCommandReadResult = {
 }
 
 export async function checkRuntimeHooks(
-  settings: Pick<GlobalSettings, 'activeRuntimeEnvironmentId'> | null | undefined,
+  hostId: ExecutionHostId,
   repoId: string
 ): Promise<HookCheckResult> {
-  const target = getActiveRuntimeTarget(settings)
+  const target = getHookInspectionTarget(hostId)
   if (target.kind !== 'environment') {
-    return window.api.hooks.check({ repoId })
+    return window.api.hooks.check({ repoId, hostId })
   }
   return callRuntimeRpc<HookCheckResult>(
     target,
@@ -35,12 +47,12 @@ export async function checkRuntimeHooks(
 }
 
 export async function inspectRuntimeSetupScriptImports(
-  settings: Pick<GlobalSettings, 'activeRuntimeEnvironmentId'> | null | undefined,
+  hostId: ExecutionHostId,
   repoId: string
 ): Promise<SetupScriptImportCandidate[]> {
-  const target = getActiveRuntimeTarget(settings)
+  const target = getHookInspectionTarget(hostId)
   if (target.kind !== 'environment') {
-    return window.api.hooks.inspectSetupScriptImports({ repoId })
+    return window.api.hooks.inspectSetupScriptImports({ repoId, hostId })
   }
   return callRuntimeRpc<SetupScriptImportCandidate[]>(
     target,
@@ -51,12 +63,12 @@ export async function inspectRuntimeSetupScriptImports(
 }
 
 export async function readRuntimeIssueCommand(
-  settings: Pick<GlobalSettings, 'activeRuntimeEnvironmentId'> | null | undefined,
+  hostId: ExecutionHostId,
   repoId: string
 ): Promise<IssueCommandReadResult> {
-  const target = getActiveRuntimeTarget(settings)
+  const target = getHookInspectionTarget(hostId)
   if (target.kind !== 'environment') {
-    return window.api.hooks.readIssueCommand({ repoId })
+    return window.api.hooks.readIssueCommand({ repoId, hostId })
   }
   return callRuntimeRpc<IssueCommandReadResult>(
     target,
@@ -67,13 +79,13 @@ export async function readRuntimeIssueCommand(
 }
 
 export async function writeRuntimeIssueCommand(
-  settings: Pick<GlobalSettings, 'activeRuntimeEnvironmentId'> | null | undefined,
+  hostId: ExecutionHostId,
   repoId: string,
   content: string
 ): Promise<void> {
-  const target = getActiveRuntimeTarget(settings)
+  const target = getHookInspectionTarget(hostId)
   if (target.kind !== 'environment') {
-    await window.api.hooks.writeIssueCommand({ repoId, content })
+    await window.api.hooks.writeIssueCommand({ repoId, content, hostId })
     return
   }
   await callRuntimeRpc(

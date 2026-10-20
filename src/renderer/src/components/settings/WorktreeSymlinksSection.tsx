@@ -1,24 +1,30 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Folder, Link2, Plus, X } from 'lucide-react'
-import type { Repo } from '../../../../shared/types'
+import type { Repo } from '../../../../shared/repo-types'
 import { Button } from '../ui/button'
 import { Command, CommandEmpty, CommandInput, CommandItem, CommandList } from '../ui/command'
 import { Popover, PopoverContent, PopoverTrigger } from '../ui/popover'
 import { cn } from '@/lib/utils'
-import { getFileTypeIcon } from '@/lib/file-type-icons'
+import { FileTypeIcon } from '@/components/FileTypeIcon'
 import { SearchableSetting } from './SearchableSetting'
-import { useAppStore } from '@/store'
+import {
+  getWorktreeSymlinkPathFilterState,
+  type WorktreeSymlinkPathSuggestion
+} from './worktree-symlink-path-filter'
 import { translate } from '@/i18n/i18n'
+import { getRepoExecutionHostId, LOCAL_EXECUTION_HOST_ID } from '../../../../shared/execution-host'
 
 type WorktreeSymlinksSectionProps = {
   repo: Repo
   updateRepo: (repoId: string, updates: Partial<Repo>) => void
 }
 
-type DirEntry = { name: string; isDirectory: boolean }
-type DirectorySuggestionState = { requestKey: string; entries: DirEntry[] }
+type DirectorySuggestionState = {
+  requestKey: string
+  entries: WorktreeSymlinkPathSuggestion[]
+}
 
-const MAX_SUGGESTIONS = 50
+const EMPTY_WORKTREE_SYMLINK_PATHS: readonly string[] = []
 
 export function WorktreeSymlinksSection({
   repo,
@@ -26,11 +32,11 @@ export function WorktreeSymlinksSection({
 }: WorktreeSymlinksSectionProps): React.JSX.Element {
   const [open, setOpen] = useState(false)
   const [query, setQuery] = useState('')
-  const activeRuntimeEnvironmentId = useAppStore((s) => s.settings?.activeRuntimeEnvironmentId)
 
-  const paths = repo.symlinkPaths ?? []
-  const queryTrimmed = query.trim().replace(/^\/+/, '')
-  const useLocalDirectorySuggestions = !activeRuntimeEnvironmentId?.trim()
+  const paths = repo.symlinkPaths ?? EMPTY_WORKTREE_SYMLINK_PATHS
+  // Why: the pane may show a non-focused runtime host; only inspect the local
+  // filesystem when the switcher-selected repo is actually local.
+  const useLocalDirectorySuggestions = getRepoExecutionHostId(repo) === LOCAL_EXECUTION_HOST_ID
   const directorySuggestionKey = `${repo.path}\n${repo.connectionId ?? ''}`
   const [directorySuggestions, setDirectorySuggestions] = useState<DirectorySuggestionState>(
     () => ({
@@ -64,20 +70,17 @@ export function WorktreeSymlinksSection({
     }
   }, [useLocalDirectorySuggestions, repo.path, repo.connectionId, directorySuggestionKey])
 
-  const filtered = useMemo(() => {
-    const q = queryTrimmed.toLowerCase()
+  const { queryTrimmed, filtered, showLiteralItem } = useMemo(() => {
     const suggestionEntries =
       useLocalDirectorySuggestions && directorySuggestions.requestKey === directorySuggestionKey
         ? directorySuggestions.entries
         : []
-    const base = q
-      ? suggestionEntries.filter((e) => e.name.toLowerCase().includes(q))
-      : suggestionEntries
-    return base.slice(0, MAX_SUGGESTIONS)
-  }, [queryTrimmed, directorySuggestionKey, directorySuggestions, useLocalDirectorySuggestions])
-
-  const hasExactMatch = filtered.some((e) => e.name === queryTrimmed)
-  const showLiteralItem = queryTrimmed.length > 0 && !hasExactMatch && !paths.includes(queryTrimmed)
+    return getWorktreeSymlinkPathFilterState({
+      query,
+      suggestions: suggestionEntries,
+      existingPaths: paths
+    })
+  }, [query, paths, directorySuggestionKey, directorySuggestions, useLocalDirectorySuggestions])
 
   const commit = (rawName: string): void => {
     const trimmed = rawName.trim().replace(/^\/+/, '')
@@ -98,14 +101,17 @@ export function WorktreeSymlinksSection({
     <SearchableSetting
       title={translate(
         'auto.components.settings.WorktreeSymlinksSection.4755f120b6',
-        'Worktree Symlinks'
+        'Worktree Shared Paths'
       )}
       description={translate(
         'auto.components.settings.WorktreeSymlinksSection.b07ef5a8b6',
-        'Paths to symlink from the primary checkout into newly created worktrees.'
+        'Paths to materialize from the primary checkout into newly created worktrees.'
       )}
       keywords={[
         repo.displayName,
+        'apfs',
+        'clone',
+        'copy',
         'symlink',
         'symlinks',
         'worktree',
@@ -121,13 +127,13 @@ export function WorktreeSymlinksSection({
           <h3 className="text-sm font-semibold">
             {translate(
               'auto.components.settings.WorktreeSymlinksSection.4755f120b6',
-              'Worktree Symlinks'
+              'Worktree Shared Paths'
             )}
           </h3>
           <p className="text-xs text-muted-foreground">
             {translate(
               'auto.components.settings.WorktreeSymlinksSection.7ff265071d',
-              'When a new worktree is created, each path listed here will be symlinked from the primary checkout.'
+              'When a new worktree is created, each path listed here is APFS clone-copied on macOS when possible, otherwise symlinked from the primary checkout.'
             )}
           </p>
         </div>
@@ -175,7 +181,6 @@ export function WorktreeSymlinksSection({
                 ) : null}
                 {filtered.map((entry) => {
                   const alreadyAdded = paths.includes(entry.name)
-                  const FileIcon = getFileTypeIcon(entry.name)
                   return (
                     <CommandItem
                       key={entry.name}
@@ -187,7 +192,10 @@ export function WorktreeSymlinksSection({
                       {entry.isDirectory ? (
                         <Folder className="size-3.5 text-muted-foreground" />
                       ) : (
-                        <FileIcon className="size-3.5 text-muted-foreground" />
+                        <FileTypeIcon
+                          filePath={entry.name}
+                          className="size-3.5 text-muted-foreground"
+                        />
                       )}
                       <span className="truncate text-xs">{entry.name}</span>
                       {alreadyAdded ? (
@@ -211,7 +219,7 @@ export function WorktreeSymlinksSection({
         <div className="rounded-xl border border-dashed border-border/60 bg-background/60 px-4 py-6 text-sm text-muted-foreground">
           {translate(
             'auto.components.settings.WorktreeSymlinksSection.31ebab5403',
-            'No symlink paths configured for this repository.'
+            'No shared paths configured for this repository.'
           )}
         </div>
       ) : (

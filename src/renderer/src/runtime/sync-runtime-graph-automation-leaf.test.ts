@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { RuntimeSyncWindowGraph } from '../../../shared/runtime-types'
 import type { AppState } from '../store/types'
-import type { TerminalTab } from '../../../shared/types'
+import type { TerminalTab } from '../../../shared/terminal-tab-types'
 
 // Why: Part B publishes never-mounted background automation tabs into the
 // runtime graph, gated on a live eager buffer. Stub the eager-buffer lookup so
@@ -77,23 +77,32 @@ async function flushMicrotasks(): Promise<void> {
   await Promise.resolve()
 }
 
+async function flushRuntimeGraphSyncTimer(): Promise<void> {
+  await vi.advanceTimersByTimeAsync(20)
+  await flushMicrotasks()
+}
+
 afterEach(() => {
   setRuntimeGraphSyncEnabled(false)
   setRuntimeGraphStoreStateGetter(null)
   vi.mocked(getEagerPtyBufferHandle).mockReturnValue(undefined)
   warnTerminalLifecycleAnomaly.mockClear()
+  vi.useRealTimers()
   vi.unstubAllGlobals()
 })
 
 async function captureGraph(): Promise<RuntimeSyncWindowGraph> {
+  vi.useFakeTimers()
   const syncWindowGraph = vi.fn().mockResolvedValue(undefined)
   vi.stubGlobal('window', { api: { runtime: { syncWindowGraph } } })
   vi.stubGlobal('HTMLElement', class HTMLElement {})
   setRuntimeGraphStoreStateGetter(() => automationState())
   setRuntimeGraphSyncEnabled(true)
-  await flushMicrotasks()
+  await flushRuntimeGraphSyncTimer()
   expect(syncWindowGraph).toHaveBeenCalledTimes(1)
-  return syncWindowGraph.mock.calls[0]![0] as RuntimeSyncWindowGraph
+  const graph = syncWindowGraph.mock.calls[0]?.[0]
+  expect(graph).toBeDefined()
+  return graph as RuntimeSyncWindowGraph
 }
 
 describe('syncRuntimeGraph background automation tabs', () => {

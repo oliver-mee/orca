@@ -1,5 +1,6 @@
-import type { Repo } from '../../../../shared/types'
+import type { Repo } from '../../../../shared/repo-types'
 import { isFolderRepo } from '../../../../shared/repo-kind'
+import { getRepoExecutionHostId, LOCAL_EXECUTION_HOST_ID } from '../../../../shared/execution-host'
 import type { SettingsSearchEntry } from './settings-search'
 import { translate } from '@/i18n/i18n'
 import { translateSearchKeyword } from './settings-search-keywords'
@@ -7,9 +8,40 @@ import { getRepositoryGitAuthorSearchEntries } from './repository-git-author-sea
 import { getRepositoryGitHooksSearchEntries } from './repository-git-hooks-search-entries'
 import { getRepositoryGitWorktreeSearchEntries } from './repository-git-worktree-search-entries'
 
-export function getRepositoryPaneSearchEntries(repo: Repo): SettingsSearchEntry[] {
+type RepositoryPaneSearchOptions = {
+  isLocalWindowsProject?: boolean
+  windowsRuntimeSupported?: boolean
+}
+
+export function getRepositoryPaneSearchEntries(
+  repo: Repo,
+  options: RepositoryPaneSearchOptions = {}
+): SettingsSearchEntry[] {
   const isFolder = isFolderRepo(repo)
+  const isLocalWindowsProject =
+    options.isLocalWindowsProject ??
+    (Boolean(options.windowsRuntimeSupported) &&
+      getRepoExecutionHostId(repo) === LOCAL_EXECUTION_HOST_ID)
   return [
+    {
+      title: translate('components.RepositoryJiraProjectSection.title', 'Default Jira project'),
+      description: translate(
+        'components.RepositoryJiraProjectSection.description',
+        'Default the Jira issue picker and Tasks list to this project. You can change it for each worktree.'
+      ),
+      keywords: [
+        repo.displayName,
+        ...translateSearchKeyword('components.RepositoryJiraProjectSection.keywordJira', 'jira'),
+        ...translateSearchKeyword(
+          'components.RepositoryJiraProjectSection.keywordDefaultProject',
+          'default project'
+        ),
+        ...translateSearchKeyword(
+          'components.RepositoryJiraProjectSection.keywordIssuePicker',
+          'issue picker'
+        )
+      ]
+    },
     {
       title: translate('auto.components.settings.repository.search.7e1e456a95', 'Display Name'),
       description: translate(
@@ -63,6 +95,40 @@ export function getRepositoryPaneSearchEntries(repo: Repo): SettingsSearchEntry[
         )
       ]
     },
+    ...(!isFolder
+      ? [
+          {
+            title: translate(
+              'auto.components.settings.repository.search.githubAccount',
+              'GitHub Account'
+            ),
+            description: translate(
+              'auto.components.settings.repository.search.githubAccountDescription',
+              'Bind a keyring gh login for this project’s GitHub API calls.'
+            ),
+            keywords: [
+              repo.displayName,
+              ...translateSearchKeyword(
+                'auto.components.settings.repository.search.9dc60d7f6d',
+                'github'
+              ),
+              ...translateSearchKeyword(
+                'auto.components.settings.repository.search.githubAccountKeyword',
+                'github account'
+              ),
+              ...translateSearchKeyword(
+                'auto.components.settings.repository.search.ghAccount',
+                'gh account'
+              ),
+              ...translateSearchKeyword(
+                'auto.components.settings.repository.search.login',
+                'login'
+              ),
+              ...translateSearchKeyword('auto.components.settings.repository.search.token', 'token')
+            ]
+          }
+        ]
+      : []),
     ...(repo.upstream && !isFolder
       ? [
           {
@@ -107,6 +173,48 @@ export function getRepositoryPaneSearchEntries(repo: Repo): SettingsSearchEntry[
           }
         ]
       : []),
+    ...(isFolder || !isLocalWindowsProject
+      ? []
+      : [
+          {
+            title: translate(
+              'auto.components.settings.repository.search.projectRuntime',
+              'Project Runtime'
+            ),
+            description: translate(
+              'auto.components.settings.repository.search.projectRuntimeDescription',
+              'Choose whether this project runs on Windows or WSL.'
+            ),
+            keywords: [
+              repo.displayName,
+              ...translateSearchKeyword(
+                'auto.components.settings.repository.search.runtime',
+                'runtime'
+              ),
+              ...translateSearchKeyword(
+                'auto.components.settings.repository.search.execution',
+                'execution'
+              ),
+              ...translateSearchKeyword(
+                'auto.components.settings.repository.search.windowsHost',
+                'windows host'
+              ),
+              ...translateSearchKeyword('auto.components.settings.repository.search.wsl', 'wsl'),
+              ...translateSearchKeyword(
+                'auto.components.settings.repository.search.distro',
+                'distro'
+              ),
+              ...translateSearchKeyword(
+                'auto.components.settings.repository.search.agentRuntime',
+                'agent runtime'
+              ),
+              ...translateSearchKeyword(
+                'auto.components.settings.repository.search.skillRuntime',
+                'skill runtime'
+              )
+            ]
+          }
+        ]),
     ...(isFolder ? [] : getRepositoryGitWorktreeSearchEntries(repo)),
     {
       title: translate('auto.components.settings.repository.search.c5266c2c9d', 'Remove Project'),
@@ -130,41 +238,6 @@ export function getRepositoryPaneSearchEntries(repo: Repo): SettingsSearchEntry[
         )
       ]
     },
-    {
-      title: translate('auto.components.settings.repository.search.b24f00294a', 'Project Icon'),
-      description: translate(
-        'auto.components.settings.repository.search.a1f3a2bd47',
-        'Project icon and color used in the sidebar and tabs.'
-      ),
-      keywords: [
-        repo.displayName,
-        ...translateSearchKeyword(
-          'auto.components.settings.repository.search.6438a94c63',
-          'project icon'
-        ),
-        ...translateSearchKeyword(
-          'auto.components.settings.repository.search.b2546efab5',
-          'repository icon'
-        ),
-        ...translateSearchKeyword('auto.components.settings.repository.search.8d045419b1', 'color'),
-        ...translateSearchKeyword('auto.components.settings.repository.search.6d8de2f090', 'hex'),
-        ...translateSearchKeyword('auto.components.settings.repository.search.c1075178cf', 'badge'),
-        ...translateSearchKeyword(
-          'auto.components.settings.repository.search.cb4b4de666',
-          'avatar'
-        ),
-        ...translateSearchKeyword(
-          'auto.components.settings.repository.search.9dc60d7f6d',
-          'github'
-        ),
-        ...translateSearchKeyword('auto.components.settings.repository.search.1e73e840ff', 'emoji'),
-        ...translateSearchKeyword(
-          'auto.components.settings.repository.search.27733eb6c1',
-          'favicon'
-        )
-      ]
-    },
-    ...(isFolder ? [] : getRepositoryGitWorktreeSearchEntries(repo)),
     ...(isFolder
       ? []
       : [...getRepositoryGitAuthorSearchEntries(repo), ...getRepositoryGitHooksSearchEntries(repo)])

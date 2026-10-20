@@ -1,64 +1,106 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react'
-import { FilePlus, FileText, Globe, Loader2, Smartphone, TerminalSquare } from 'lucide-react'
 import { Input } from '@/components/ui/input'
-import { AgentIcon } from '@/lib/agent-catalog'
-import { cn } from '@/lib/utils'
 import { useRuntimeFileListForWorktree } from '../quick-open-file-list'
 import {
+  createTabEntryAllowAbsolutePathsSelector,
   getTabEntryOptions,
-  type TabCreateEntryArgs,
-  type TabEntryActionClassification,
-  type TabEntryOption
+  isTabEntryAbsolutePathLike
 } from './tab-create-entry-action'
+import { findMatchingTabAgentLaunchOptions } from './tab-agent-launch-options'
+import { findMatchingTabCreateMenuOptions } from './tab-create-menu-options'
+import { getActiveOptionId, type ActiveOption } from './tab-create-entry-active-option'
 import {
-  findMatchingTabAgentLaunchOptions,
-  type TabAgentLaunchOption
-} from './tab-agent-launch-options'
+  EntryActionRow,
+  EntryStatusRow,
+  RESULT_LISTBOX_ID,
+  resultOptionDomId
+} from './TabBarCreateEntryRow'
+import { dropFileEntriesCoveredByTabResults } from './open-tab-entry-dedupe'
+import { placeHistoryRowsInEntryOptions } from './tab-create-entry-history-placement'
+import { useOmniboxBrowserHistory } from './use-omnibox-browser-history'
+import { useTabEntryMenuReturnFocus } from './use-tab-entry-menu-return-focus'
+import { activateOpenTabSearchResult } from './open-tab-selection-routing'
+import { useTabCreateEntrySearchResults } from './use-tab-create-entry-search-results'
+import { DEFAULT_SEARCH_ENGINE } from '../../../../shared/browser-url'
+import { getRendererAppPlatform } from '@/lib/renderer-app-platform'
+import { useAppStore } from '@/store'
+import { isQuickOpenQueryTooLarge } from '../quick-open-search'
+import { parseForcedSearchQuery } from './tab-create-entry-forced-search'
+import { useNetworkSafeTabEntrySelection } from './tab-create-entry-network-selection'
+import { focusTabEntryMenuItemAtEdge } from './tab-create-entry-keyboard-focus'
 import {
-  findMatchingTabCreateMenuOptions,
-  type TabCreateMenuOption
-} from './tab-create-menu-options'
-import type { TuiAgent } from '../../../../shared/types'
-import { translate } from '@/i18n/i18n'
+  getTabEntryChooseActionMessage,
+  getTabEntryOmniboxPlaceholder
+} from './tab-create-entry-copy'
+import { EMPTY_AGENT_OPTIONS, EMPTY_MENU_OPTIONS } from './tab-create-entry-empty-options'
+import type { TabEntryActionClassification } from './tab-create-entry-classifier'
+import type { TabBarCreateEntryProps } from './tab-create-entry-props'
 
-const EMPTY_AGENT_OPTIONS: readonly TabAgentLaunchOption[] = []
-const EMPTY_MENU_OPTIONS: readonly TabCreateMenuOption[] = []
-
-type TabBarCreateEntryProps = {
-  agentOptions?: readonly TabAgentLaunchOption[]
-  groupId: string
-  menuOpen: boolean
-  menuOptions?: readonly TabCreateMenuOption[]
-  onDidOpenEntry?: () => void
-  onLaunchAgent?: (agent: TuiAgent) => void
-  onOpenDefaultTerminal?: () => void
-  onOpenEntry?: (args: TabCreateEntryArgs) => Promise<void>
-  onQueryChange?: (query: string) => void
-  onSelectMenuOption?: (option: TabCreateMenuOption) => void
-  worktreeId: string
+export default function TabBarCreateEntry(props: TabBarCreateEntryProps): React.JSX.Element {
+  return <TabBarCreateEntrySession key={String(props.menuOpen)} {...props} />
 }
 
-export default function TabBarCreateEntry({
+function TabBarCreateEntrySession({
   agentOptions = EMPTY_AGENT_OPTIONS,
   groupId,
   menuOpen,
   menuOptions = EMPTY_MENU_OPTIONS,
   onDidOpenEntry,
   onLaunchAgent,
+  onLaunchAgentOption,
   onOpenDefaultTerminal,
   onOpenEntry,
   onQueryChange,
+  onQueueSwitchFocus,
   onSelectMenuOption,
   worktreeId
 }: TabBarCreateEntryProps): React.JSX.Element {
   const [query, setQuery] = useState('')
   const [pending, setPending] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const [selectedIndex, setSelectedIndex] = useState(0)
-  const [selectedIndexQuery, setSelectedIndexQuery] = useState(query)
-  const [lastMenuOpen, setLastMenuOpen] = useState(menuOpen)
+  const [switchError, setSwitchError] = useState<string | null>(null)
+  const [selectionGuidance, setSelectionGuidance] = useState<string | null>(null)
+  // null = follow ranking (deferred tabs can prepend); set on arrow keys only.
+  const [pinnedOptionId, setPinnedOptionId] = useState<string | null>(null)
   const inputRef = useRef<HTMLInputElement>(null)
+  const submissionIdRef = useRef(0)
+  useEffect(
+    () => () => {
+      submissionIdRef.current += 1
+    },
+    []
+  )
   const fileList = useRuntimeFileListForWorktree({ enabled: menuOpen, worktreeId })
+  const rawQueryOversized = isQuickOpenQueryTooLarge(query)
+  const forcedSearch = parseForcedSearchQuery(query)
+  const terminalQueryMode = rawQueryOversized || forcedSearch.forced
+  const tabResults = useTabCreateEntrySearchResults({
+    enabled: menuOpen && !terminalQueryMode,
+    query,
+    worktreeId,
+    retainedResultId: pinnedOptionId
+  })
+  const shouldResolveAbsolutePaths =
+    menuOpen && !terminalQueryMode && isTabEntryAbsolutePathLike(query.trim())
+  const allowAbsolutePathsSelector = useMemo(
+    () =>
+      createTabEntryAllowAbsolutePathsSelector(worktreeId, {
+        skip: !shouldResolveAbsolutePaths
+      }),
+    [shouldResolveAbsolutePaths, worktreeId]
+  )
+  const allowAbsolutePaths = useAppStore(allowAbsolutePathsSelector)
+  // Why the worktree path: editor↔file dedupe folds case by the worktree's
+  // filesystem, which a Windows client's own platform does not describe.
+  const worktreePath = useAppStore((state) =>
+    menuOpen ? (state.getKnownWorktreeById(worktreeId)?.path ?? null) : null
+  )
+  const localPlatform = getRendererAppPlatform() === 'win32' ? 'windows' : 'posix'
+  const searchEngine = useAppStore(
+    (state) => state.browserDefaultSearchEngine ?? DEFAULT_SEARCH_ENGINE
+  )
+
+  useTabEntryMenuReturnFocus(inputRef, menuOpen)
 
   useEffect(() => {
     if (!menuOpen) {
@@ -69,47 +111,55 @@ export default function TabBarCreateEntry({
   }, [menuOpen])
 
   const matchingMenuOptions = useMemo(
-    () => findMatchingTabCreateMenuOptions(query, menuOptions),
-    [menuOptions, query]
+    () =>
+      terminalQueryMode ? EMPTY_MENU_OPTIONS : findMatchingTabCreateMenuOptions(query, menuOptions),
+    [menuOptions, query, terminalQueryMode]
   )
   const options = useMemo(() => {
-    const entryOptions = getTabEntryOptions(query, fileList)
+    const entryOptions = dropFileEntriesCoveredByTabResults(
+      getTabEntryOptions(query, fileList, 4, {
+        allowAbsolutePaths,
+        localPlatform,
+        searchEngine
+      }),
+      tabResults,
+      worktreePath
+    )
     if (matchingMenuOptions.length === 0) {
       return entryOptions
     }
     // Why: a matched create-menu action should win over a generic new-file fallback.
     return entryOptions.filter((option) => option.classification.kind !== 'new-file')
-  }, [fileList, matchingMenuOptions.length, query])
+  }, [
+    allowAbsolutePaths,
+    fileList,
+    localPlatform,
+    matchingMenuOptions.length,
+    query,
+    searchEngine,
+    tabResults,
+    worktreePath
+  ])
+  const historyRows = useOmniboxBrowserHistory({
+    enabled: menuOpen && !terminalQueryMode,
+    query,
+    tabResults
+  })
   const matchingAgentOptions = useMemo(
-    () => findMatchingTabAgentLaunchOptions(query, agentOptions),
-    [agentOptions, query]
+    () =>
+      terminalQueryMode
+        ? EMPTY_AGENT_OPTIONS
+        : findMatchingTabAgentLaunchOptions(query, agentOptions),
+    [agentOptions, query, terminalQueryMode]
   )
-
-  useEffect(() => {
-    onQueryChange?.(query)
-  }, [onQueryChange, query])
-
-  if (selectedIndexQuery !== query) {
-    setSelectedIndexQuery(query)
-    if (selectedIndex !== 0) {
-      // Why: the first filtered action should be highlighted on the same paint as the new query.
-      setSelectedIndex(0)
-    }
-  }
-
-  if (lastMenuOpen !== menuOpen) {
-    setLastMenuOpen(menuOpen)
-    if (!menuOpen) {
-      setQuery('')
-      setPending(false)
-      setError(null)
-      setSelectedIndex(0)
-    }
-  }
 
   const disabled = !onOpenEntry
   const hasQuery = query.trim().length > 0
   const activeOptions: ActiveOption[] = [
+    ...tabResults.map((option) => ({
+      kind: 'tab' as const,
+      option
+    })),
     ...matchingMenuOptions.map((option) => ({
       kind: 'menu' as const,
       option
@@ -118,20 +168,25 @@ export default function TabBarCreateEntry({
       kind: 'agent' as const,
       option
     })),
-    ...options.filter(isActiveEntryOption).map((option) => ({
-      kind: 'entry' as const,
-      option
-    }))
+    ...placeHistoryRowsInEntryOptions(options, historyRows)
   ]
-  const activeSelectedIndex = Math.min(selectedIndex, Math.max(activeOptions.length - 1, 0))
-  const selectedActiveOption = activeOptions[activeSelectedIndex]
+  const { activeSelectedIndex, selectedActiveOption } = useNetworkSafeTabEntrySelection({
+    activeOptions,
+    fileIndexFailed: Boolean(fileList.loadError),
+    fileIndexReady: !fileList.loading && !fileList.loadError,
+    forcedSearch: forcedSearch.forced,
+    menuOpen,
+    pinnedOptionId,
+    query
+  })
   const statusOption = options.find(
     (option) => option.classification.kind === 'empty' || option.classification.kind === 'blocked'
   )
   const statusMessage =
-    statusOption?.classification.kind === 'empty' || statusOption?.classification.kind === 'blocked'
+    statusOption != null &&
+    (statusOption.classification.kind === 'empty' || statusOption.classification.kind === 'blocked')
       ? statusOption.classification.message
-      : 'Open any file, URL, agent, ...'
+      : getTabEntryOmniboxPlaceholder()
 
   const submitOption = (option?: ActiveOption) => {
     if (disabled || pending) {
@@ -144,7 +199,30 @@ export default function TabBarCreateEntry({
         onDidOpenEntry?.()
         return
       }
-      setError(statusMessage)
+      if (activeOptions.length > 0) {
+        setSelectionGuidance(getTabEntryChooseActionMessage())
+        return
+      }
+      // Why: an 'empty' status is the placeholder prompt, not a failure — showing
+      // it as an error turns a bare "?" into a red row that reads like a bug.
+      if (statusOption?.classification.kind !== 'empty') {
+        setError(statusMessage)
+      }
+      return
+    }
+    if (selectedOption.kind === 'tab') {
+      const outcome = activateOpenTabSearchResult(selectedOption.option)
+      if (outcome.status === 'blocked') {
+        return
+      }
+      if (outcome.status === 'failed') {
+        setSwitchError(outcome.message)
+        return
+      }
+      if (outcome.focus) {
+        onQueueSwitchFocus?.(outcome.focus)
+      }
+      onDidOpenEntry?.()
       return
     }
     if (selectedOption.kind === 'menu') {
@@ -153,27 +231,41 @@ export default function TabBarCreateEntry({
       return
     }
     if (selectedOption.kind === 'agent') {
-      onLaunchAgent?.(selectedOption.option.agent)
+      if (selectedOption.option.disabled) {
+        return
+      }
+      if (onLaunchAgentOption) {
+        onLaunchAgentOption(selectedOption.option)
+      } else {
+        onLaunchAgent?.(selectedOption.option.agent)
+      }
       onDidOpenEntry?.()
       return
     }
+    // A history row is a navigation, so it rides the entry-open path the typed-URL
+    // row already uses — routing, worktree targeting and SSH resolution included.
+    const classification: TabEntryActionClassification =
+      selectedOption.kind === 'history'
+        ? { kind: 'explicit-url', url: selectedOption.option.entry.url }
+        : selectedOption.option.classification
     setPending(true)
     setError(null)
-    void onOpenEntry({
-      query,
-      worktreeId,
-      groupId,
-      fileList,
-      classification: selectedOption.option.classification
-    })
+    const submissionId = ++submissionIdRef.current
+    void onOpenEntry({ query, worktreeId, groupId, fileList, classification })
       .then(() => {
-        onDidOpenEntry?.()
+        if (submissionIdRef.current === submissionId) {
+          onDidOpenEntry?.()
+        }
       })
       .catch((caught) => {
-        setError(caught instanceof Error ? caught.message : String(caught))
+        if (submissionIdRef.current === submissionId) {
+          setError(caught instanceof Error ? caught.message : String(caught))
+        }
       })
       .finally(() => {
-        setPending(false)
+        if (submissionIdRef.current === submissionId) {
+          setPending(false)
+        }
       })
   }
 
@@ -185,14 +277,34 @@ export default function TabBarCreateEntry({
         submitOption()
       }}
       onKeyDown={(event) => {
-        if (activeOptions.length > 1 && (event.key === 'ArrowDown' || event.key === 'ArrowUp')) {
-          event.preventDefault()
-          event.stopPropagation()
-          setSelectedIndex((current) => {
+        if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+          if (activeOptions.length > 0) {
+            event.preventDefault()
+            event.stopPropagation()
             const delta = event.key === 'ArrowDown' ? 1 : -1
-            return (current + delta + activeOptions.length) % activeOptions.length
-          })
-          return
+            const nextIndex =
+              activeSelectedIndex === null
+                ? event.key === 'ArrowDown'
+                  ? 0
+                  : activeOptions.length - 1
+                : (activeSelectedIndex + delta + activeOptions.length) % activeOptions.length
+            setPinnedOptionId(getActiveOptionId(activeOptions[nextIndex]))
+            setSelectionGuidance(null)
+            return
+          }
+          // Why: with no result rows the static create/agent items render below;
+          // move focus into that Radix menu list so it stays keyboard-navigable
+          // from the search box instead of trapping focus in the input.
+          if (
+            focusTabEntryMenuItemAtEdge(
+              event.currentTarget,
+              event.key === 'ArrowDown' ? 'first' : 'last'
+            )
+          ) {
+            event.preventDefault()
+            event.stopPropagation()
+            return
+          }
         }
         if (event.key !== 'Escape') {
           event.stopPropagation()
@@ -205,33 +317,85 @@ export default function TabBarCreateEntry({
           ref={inputRef}
           value={query}
           onChange={(event) => {
-            setQuery(event.target.value)
+            const nextQuery = event.target.value
+            // Why: the parent query only changes in response to typing, so publish
+            // it in this event rather than a later effect after the render commits.
+            setQuery(nextQuery)
+            onQueryChange?.(nextQuery)
+            setPinnedOptionId(null)
             setError(null)
+            setSwitchError(null)
+            setSelectionGuidance(null)
           }}
+          // Why: disabling the focused input would hand focus to the body and
+          // break arrow/Escape navigation until the submission settles.
           disabled={disabled}
-          aria-label={translate(
-            'auto.components.tab.bar.TabBarCreateEntry.39676a184c',
-            'Open any file, URL, agent, ...'
-          )}
+          readOnly={pending}
+          aria-busy={pending || undefined}
+          role="combobox"
+          aria-expanded={!error && activeOptions.length > 0}
+          aria-controls={!error && activeOptions.length > 0 ? RESULT_LISTBOX_ID : undefined}
+          aria-autocomplete="list"
+          aria-activedescendant={
+            activeSelectedIndex !== null && !error
+              ? resultOptionDomId(activeSelectedIndex)
+              : undefined
+          }
+          aria-label={getTabEntryOmniboxPlaceholder()}
           aria-invalid={error ? true : undefined}
-          placeholder={translate(
-            'auto.components.tab.bar.TabBarCreateEntry.39676a184c',
-            'Open any file, URL, agent, ...'
-          )}
+          aria-errormessage={error ? 'tab-create-entry-error' : undefined}
+          placeholder={getTabEntryOmniboxPlaceholder()}
           className="h-9 rounded-none border-0 bg-transparent px-0 text-xs font-normal text-foreground shadow-none placeholder:font-normal placeholder:text-muted-foreground focus-visible:border-0 focus-visible:ring-0 aria-invalid:border-0 aria-invalid:ring-0 md:text-xs dark:bg-transparent"
         />
       </div>
-      {error || activeOptions.length > 0 || hasQuery ? (
-        <div className="mt-1 space-y-0.5 px-1">
-          {error ? (
+      {/* Above the list, not instead of it: a stale switch target must not wipe
+          the rows the user can still act on. The live region stays mounted so a
+          screen reader announces the failure instead of missing the insertion. */}
+      <div role="status">
+        {error ? (
+          <div className="mt-1 px-1" id="tab-create-entry-error">
             <EntryStatusRow message={error} />
-          ) : activeOptions.length > 0 ? (
+          </div>
+        ) : null}
+        {switchError ? (
+          <div className="mt-1 px-1">
+            <EntryStatusRow message={switchError} />
+          </div>
+        ) : null}
+        {selectionGuidance ? (
+          <div className="mt-1 px-1">
+            <EntryStatusRow message={selectionGuidance} />
+          </div>
+        ) : null}
+        {activeOptions.length > 0 && statusOption ? (
+          <div className="mt-1 px-1">
+            <EntryStatusRow loading={fileList.loading} message={statusMessage} />
+          </div>
+        ) : null}
+      </div>
+      {!error && (activeOptions.length > 0 || hasQuery) ? (
+        <div
+          className="mt-1 space-y-0.5 px-1"
+          id={RESULT_LISTBOX_ID}
+          role={activeOptions.length > 0 ? 'listbox' : undefined}
+        >
+          {activeOptions.length > 0 ? (
             activeOptions.map((option, index) => (
               <EntryActionRow
                 key={getActiveOptionId(option)}
+                id={resultOptionDomId(index)}
                 option={option}
                 selected={index === activeSelectedIndex}
-                onClick={() => submitOption(option)}
+                disabled={
+                  disabled ||
+                  pending ||
+                  (option.kind === 'agent' && option.option.disabled === true)
+                }
+                loading={pending && index === activeSelectedIndex}
+                onClick={() => {
+                  setSelectionGuidance(null)
+                  submitOption(option)
+                }}
               />
             ))
           ) : (
@@ -241,148 +405,4 @@ export default function TabBarCreateEntry({
       ) : null}
     </form>
   )
-}
-
-type ActiveEntryOption = TabEntryOption & {
-  classification: TabEntryActionClassification
-}
-
-type ActiveOption =
-  | {
-      kind: 'agent'
-      option: TabAgentLaunchOption
-    }
-  | {
-      kind: 'entry'
-      option: ActiveEntryOption
-    }
-  | {
-      kind: 'menu'
-      option: TabCreateMenuOption
-    }
-
-function isActiveEntryOption(option: TabEntryOption): option is ActiveEntryOption {
-  return option.classification.kind !== 'empty' && option.classification.kind !== 'blocked'
-}
-
-function getActiveOptionId(option: ActiveOption): string {
-  if (option.kind === 'agent') {
-    return `agent:${option.option.agent}`
-  }
-  if (option.kind === 'menu') {
-    return `menu:${option.option.id}`
-  }
-  return option.option.id
-}
-
-function EntryStatusRow({
-  loading = false,
-  message
-}: {
-  loading?: boolean
-  message: string
-}): React.JSX.Element {
-  return (
-    <div className="flex min-h-6 items-center gap-1.5 rounded-[7px] px-1 text-[11px] leading-5 text-muted-foreground">
-      {loading ? <Loader2 className="size-3.5 shrink-0 animate-spin" aria-hidden="true" /> : null}
-      <span className="truncate">{message}</span>
-    </div>
-  )
-}
-
-function EntryActionRow({
-  onClick,
-  option,
-  selected
-}: {
-  onClick: () => void
-  option: ActiveOption
-  selected: boolean
-}): React.JSX.Element {
-  const presentation = getActionPresentation(option)
-
-  return (
-    <button
-      type="button"
-      className={cn(
-        'flex h-6 w-full items-center gap-1.5 rounded-[7px] px-1 text-left text-[11px] leading-5 outline-none',
-        selected
-          ? 'bg-black/8 text-accent-foreground dark:bg-white/14'
-          : 'text-muted-foreground hover:bg-black/8 hover:text-accent-foreground dark:hover:bg-white/14'
-      )}
-      onClick={onClick}
-    >
-      {presentation.icon}
-      <span className={cn('min-w-0 truncate font-medium', presentation.showDetail && 'shrink-0')}>
-        {presentation.label}
-      </span>
-      {presentation.showDetail ? (
-        <>
-          <span className="text-muted-foreground/70" aria-hidden="true">
-            ·
-          </span>
-          <span className="min-w-0 truncate">{presentation.detail}</span>
-        </>
-      ) : null}
-    </button>
-  )
-}
-
-function getActionPresentation(option: ActiveOption): {
-  detail: string
-  icon: React.ReactNode
-  label: string
-  showDetail: boolean
-} {
-  if (option.kind === 'menu') {
-    const icon =
-      option.option.kind === 'new-browser' ? (
-        <Globe className="size-3.5 shrink-0" aria-hidden="true" />
-      ) : option.option.kind === 'new-markdown' ? (
-        <FilePlus className="size-3.5 shrink-0" aria-hidden="true" />
-      ) : option.option.kind === 'open-markdown' ? (
-        <FileText className="size-3.5 shrink-0" aria-hidden="true" />
-      ) : option.option.kind === 'new-simulator' || option.option.kind === 'go-to-simulator' ? (
-        <Smartphone className="size-3.5 shrink-0" aria-hidden="true" />
-      ) : (
-        <TerminalSquare className="size-3.5 shrink-0" aria-hidden="true" />
-      )
-    return {
-      detail: '',
-      icon,
-      label: option.option.label,
-      showDetail: false
-    }
-  }
-  if (option.kind === 'agent') {
-    return {
-      detail: option.option.label,
-      icon: <AgentIcon agent={option.option.agent} size={14} />,
-      label: translate('auto.components.tab.bar.TabBarCreateEntry.b27864279e', 'Launch agent'),
-      showDetail: true
-    }
-  }
-  const { classification } = option.option
-  if (classification.kind === 'explicit-url' || classification.kind === 'host-url') {
-    return {
-      detail: classification.url,
-      icon: <Globe className="size-3.5 shrink-0" aria-hidden="true" />,
-      label: translate('auto.components.tab.bar.TabBarCreateEntry.7cdf8ee0c8', 'Open URL'),
-      showDetail: true
-    }
-  }
-  if (classification.kind === 'existing-file') {
-    return {
-      detail: classification.relativePath,
-      icon: <FileText className="size-3.5 shrink-0" aria-hidden="true" />,
-      label: translate('auto.components.tab.bar.TabBarCreateEntry.25dc1cd653', 'Open file'),
-      showDetail: true
-    }
-  }
-  return {
-    detail: classification.relativePath,
-    icon: <FilePlus className="size-3.5 shrink-0" aria-hidden="true" />,
-    label: translate('auto.components.tab.bar.TabBarCreateEntry.d62d63b807', 'Create file'),
-    showDetail: true
-  }
 }

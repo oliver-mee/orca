@@ -1,4 +1,4 @@
-import { createHmac, randomBytes, timingSafeEqual } from 'crypto'
+import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto'
 import type { AutomationWebhookConfig } from '../../shared/automations-types'
 
 /** Headers a webhook request may carry the shared-secret token in. GitLab uses
@@ -50,7 +50,7 @@ function stripSignaturePrefix(value: string): string {
   const eq = value.indexOf('=')
   // Why: GitHub sends `sha256=<hex>`; Gitea/others send bare hex. Strip an
   // algorithm prefix when present so both compare against the raw digest.
-  return eq >= 0 ? value.slice(eq + 1).trim() : value.trim()
+  return eq !== -1 ? value.slice(eq + 1).trim() : value.trim()
 }
 
 /** Verify an inbound webhook request against the automation's secret config.

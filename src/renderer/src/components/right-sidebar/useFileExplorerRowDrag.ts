@@ -1,5 +1,10 @@
 import React, { useCallback, useRef } from 'react'
-import { getWorkspaceFileDragPaths, WORKSPACE_FILE_PATH_MIME } from '@/lib/workspace-file-drag'
+import { toast } from 'sonner'
+import {
+  getWorkspaceFileDragRejectionMessage,
+  readWorkspaceFileDragPaths,
+  WORKSPACE_FILE_PATH_MIME
+} from '@/lib/workspace-file-drag'
 
 const DRAG_EXPAND_DELAY_MS = 500
 
@@ -65,14 +70,13 @@ export function useFileExplorerRowDrag({
     [clearExpandTimer, clearNativeExpandTimer]
   )
 
+  // OS file dragover and drop are taken by the explorer root's owner before rows see them.
   const handleDragOver = useCallback((e: React.DragEvent) => {
-    const isInternal = e.dataTransfer.types.includes(WORKSPACE_FILE_PATH_MIME)
-    const isNative = e.dataTransfer.types.includes('Files')
-    if (!isInternal && !isNative) {
+    if (!e.dataTransfer.types.includes(WORKSPACE_FILE_PATH_MIME)) {
       return
     }
     e.preventDefault()
-    e.dataTransfer.dropEffect = isInternal ? 'move' : 'copy'
+    e.dataTransfer.dropEffect = 'move'
   }, [])
 
   const handleDragEnter = useCallback(
@@ -161,11 +165,14 @@ export function useFileExplorerRowDrag({
       clearNativeExpandTimer()
       onDragTargetChange(null)
       onNativeDragTargetChange(null)
-      for (const sourcePath of getWorkspaceFileDragPaths(e.dataTransfer)) {
+      const dragPaths = readWorkspaceFileDragPaths(e.dataTransfer)
+      if (dragPaths.status === 'rejected') {
+        toast.error(getWorkspaceFileDragRejectionMessage(dragPaths.reason))
+        return
+      }
+      for (const sourcePath of dragPaths.paths) {
         onMoveDrop(sourcePath, rowDropDir)
       }
-      // Why: native Files drops are handled by the preload-relayed IPC event,
-      // not the React drop handler. We only clear visual state here.
     },
     [
       rowDropDir,

@@ -2,6 +2,24 @@ import XCTest
 @testable import OrcaComputerUseMacOSCore
 
 final class SnapshotRenderingTests: XCTestCase {
+    func testSkipsUnsupportedAdvertisedAttributes() {
+        let advertised: Set<String> = ["AXRole", "AXChildren"]
+
+        XCTAssertTrue(SnapshotRenderHeuristics.supportsAttribute("AXRole", advertisedAttributes: advertised))
+        XCTAssertFalse(SnapshotRenderHeuristics.supportsAttribute("AXTitle", advertisedAttributes: advertised))
+    }
+
+    func testUnknownAttributeAdvertisementsStayPermissive() {
+        XCTAssertTrue(SnapshotRenderHeuristics.supportsAttribute("AXTitle", advertisedAttributes: nil))
+    }
+
+    func testSecureTextMetadataOnlyProbesTextLikeRoles() {
+        XCTAssertTrue(SnapshotRenderHeuristics.shouldProbeSecureTextMetadata(role: "AXTextField"))
+        XCTAssertTrue(SnapshotRenderHeuristics.shouldProbeSecureTextMetadata(role: "AXSearchField"))
+        XCTAssertFalse(SnapshotRenderHeuristics.shouldProbeSecureTextMetadata(role: "AXGroup"))
+        XCTAssertFalse(SnapshotRenderHeuristics.shouldProbeSecureTextMetadata(role: "AXButton"))
+    }
+
     func testElidesAnonymousWrappers() {
         let node = SnapshotRenderNode(role: "AXGroup", childCount: 1)
 
@@ -54,6 +72,34 @@ final class SnapshotRenderingTests: XCTestCase {
         )
 
         XCTAssertEqual(SnapshotRenderHeuristics.meaningfulActions(node.rawActions, role: node.role), ["AXScrollUpByPage", "AXScrollDownByPage"])
+    }
+
+    func testKeepsHorizontalOnlyActionsInTheirOriginalOrder() {
+        let actions = ["AXScrollRightByPage", "AXPress", "AXScrollLeftByPage", "AXScrollRightByPage"]
+        let node = SnapshotRenderNode(role: "AXScrollArea", rawActions: actions)
+
+        XCTAssertEqual(
+            SnapshotRenderHeuristics.meaningfulActions(actions, role: node.role),
+            ["AXScrollRightByPage", "AXScrollLeftByPage", "AXScrollRightByPage"]
+        )
+        XCTAssertEqual(
+            SnapshotRenderHeuristics.line(index: 2, node: node),
+            "2 scroll area, Secondary Actions: scroll right, scroll left, scroll right"
+        )
+    }
+
+    func testKeepsMixedScrollActionsOutsideScrollAreas() {
+        let actions = ["AXScrollLeftByPage", "AXScrollDownByPage", "AXScrollRightByPage", "AXCancel"]
+        let node = SnapshotRenderNode(role: "AXMenu", rawActions: actions)
+
+        XCTAssertEqual(
+            SnapshotRenderHeuristics.meaningfulActions(actions, role: node.role),
+            ["AXScrollLeftByPage", "AXScrollDownByPage", "AXScrollRightByPage"]
+        )
+        XCTAssertEqual(
+            SnapshotRenderHeuristics.line(index: 3, node: node),
+            "3 menu, Secondary Actions: scroll left, scroll down, scroll right"
+        )
     }
 
     func testTextFieldsKeepDistinctValueAndPlaceholder() {

@@ -60,6 +60,20 @@ public struct SnapshotTabStripCompaction: Equatable {
 }
 
 public enum SnapshotRenderHeuristics {
+    public static func shouldProbeSecureTextMetadata(role: String) -> Bool {
+        let normalized = role.lowercased()
+        return normalized.contains("text") ||
+            normalized.contains("field") ||
+            normalized.contains("password") ||
+            normalized.contains("search") ||
+            normalized.contains("combo")
+    }
+
+    public static func supportsAttribute(_ attribute: String, advertisedAttributes: Set<String>?) -> Bool {
+        guard let advertisedAttributes else { return true }
+        return advertisedAttributes.contains(attribute)
+    }
+
     public static func displayName(_ node: SnapshotRenderNode) -> String? {
         if let title = clean(node.title) {
             return title
@@ -95,8 +109,8 @@ public enum SnapshotRenderHeuristics {
                 return action != "AXCancel" && action != "AXPick"
             }
             if role == "AXScrollArea",
-               (rawActions.contains("AXScrollUpByPage") || rawActions.contains("AXScrollDownByPage")),
-               action == "AXScrollLeftByPage" || action == "AXScrollRightByPage" {
+               action == "AXScrollLeftByPage" || action == "AXScrollRightByPage",
+               (rawActions.contains("AXScrollUpByPage") || rawActions.contains("AXScrollDownByPage")) {
                 return false
             }
             return true
@@ -224,11 +238,10 @@ public enum SnapshotRenderHeuristics {
         if roleText == "heading", Int(value) != nil {
             return nil
         }
-        let clean = sanitize(value)
         if roleText == "text" || roleText == "text entry area" || roleText == "scroll bar" || roleText == "value indicator" {
-            return " \(clean)"
+            return " \(value)"
         }
-        return ", Value: \(clean)"
+        return ", Value: \(value)"
     }
 
     private static func markdownEscaped(_ value: String) -> String {

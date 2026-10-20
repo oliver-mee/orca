@@ -1,9 +1,7 @@
 import type { IBufferLine, IBufferRange } from '@xterm/xterm'
-import { extractTerminalFileLinkCandidates, resolveTerminalFileLink } from '@/lib/terminal-links'
-import { isRemoteRuntimeFileOperation } from '@/runtime/runtime-file-client'
-import { getTerminalFileContext, openDetectedFilePath } from './terminal-file-open-routing'
-import { getTerminalPathExistsCacheKey } from './terminal-path-exists-cache'
-import { resolveKnownWorktreeRootPathLink } from './terminal-worktree-path-link'
+import { extractTerminalFileLinkCandidates } from '@/lib/terminal-links'
+import { openDetectedFilePath } from './terminal-file-open-routing'
+import { resolveFileLinkTarget } from './terminal-file-link-target'
 import {
   buildHardWrappedPathLogicalLineCandidates,
   buildWrappedLogicalLine,
@@ -17,8 +15,11 @@ type FileLinkHitTestDeps = {
   worktreeId: string
   worktreePath: string
   runtimeEnvironmentId?: string | null
+  wslDistro?: string | null
+  terminalHandle?: string | null
   pathExistsCache?: Map<string, boolean>
   openWithSystemDefault?: boolean
+  sourceTabId?: string | null
 }
 
 export function openFilePathLinkAtBufferPosition(
@@ -42,38 +43,28 @@ export function openFilePathLinkAtBufferPosition(
       isKnownWorktreeRoot: boolean
     }[] = []
     for (const parsed of extractTerminalFileLinkCandidates(logicalLine.text)) {
-      const resolved = deps.startupCwd
-        ? resolveTerminalFileLink(parsed, deps.startupCwd, deps.terminalHomePath)
-        : null
-      if (!resolved) {
+      const target = resolveFileLinkTarget(parsed, {
+        cwd: deps.startupCwd,
+        homePath: deps.terminalHomePath,
+        worktreeId: deps.worktreeId,
+        worktreePath: deps.worktreePath,
+        runtimeEnvironmentId: deps.runtimeEnvironmentId,
+        wslDistro: deps.wslDistro
+      })
+      if (!target) {
         continue
       }
       const range = rangeForParsedFileLink(logicalLine, parsed.startIndex, parsed.endIndex)
       if (!range || !rangeContainsBufferPosition(range, position, terminalColumns)) {
         continue
       }
-      const fileContext = getTerminalFileContext(
-        deps.worktreeId,
-        deps.worktreePath,
-        deps.runtimeEnvironmentId
-      )
-      const cacheKey = getTerminalPathExistsCacheKey({
-        absolutePath: resolved.absolutePath,
-        connectionId: fileContext.connectionId,
-        isRemoteRuntimePath: isRemoteRuntimeFileOperation(fileContext, resolved.absolutePath),
-        runtimeEnvironmentId: deps.runtimeEnvironmentId
-      })
-      const isKnownWorktreeRoot = Boolean(resolveKnownWorktreeRootPathLink(resolved.absolutePath))
-      if (/[\\/]$/.test(parsed.pathText) && !isKnownWorktreeRoot) {
-        continue
-      }
       matches.push({
-        absolutePath: resolved.absolutePath,
-        line: resolved.line,
-        column: resolved.column,
+        absolutePath: target.absolutePath,
+        line: target.line,
+        column: target.column,
         pathText: parsed.pathText,
-        cachedExists: deps.pathExistsCache?.get(cacheKey),
-        isKnownWorktreeRoot
+        cachedExists: deps.pathExistsCache?.get(target.cacheKey),
+        isKnownWorktreeRoot: target.isKnownWorktreeRoot
       })
     }
 

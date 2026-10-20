@@ -11,10 +11,7 @@ import {
   SelectValue
 } from '@/components/ui/select'
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
-import type {
-  AutomationWebhookSecretMode,
-  WebhookServerEndpoint
-} from '../../../../shared/automations-types'
+import type { WebhookServerEndpoint } from '../../../../shared/automations-types'
 import { Field } from './automation-page-parts'
 import type { AutomationDraft } from './AutomationEditorDialog'
 import { translate } from '@/i18n/i18n'
@@ -23,6 +20,7 @@ type AutomationWebhookSectionProps = {
   draft: AutomationDraft
   automationId: string | null
   webhookEndpoint: WebhookServerEndpoint | null
+  remoteHost?: boolean
   pickerTriggerClassName: string
   toggleItemClassName: string
   onDraftChange: (updater: (current: AutomationDraft) => AutomationDraft) => void
@@ -40,12 +38,18 @@ function resolveWebhookUrl(
   if (!endpoint || !endpoint.running) {
     return {
       url: null,
-      hint: 'Enable the webhook receiver in Settings → Automations to get a URL.'
+      hint: 'Enable the webhook receiver in Settings → Advanced to get a URL.'
     }
   }
   // Why: a 0.0.0.0 bind has no usable host in a URL; show a placeholder the
   // user replaces with the machine's reachable address/hostname.
-  const host = endpoint.bindAddress === '0.0.0.0' ? 'YOUR-HOST' : endpoint.bindAddress
+  const address = endpoint.bindAddress
+  const host =
+    address === '0.0.0.0' || address === '::'
+      ? 'YOUR-HOST'
+      : address.includes(':')
+        ? `[${address}]`
+        : address
   return {
     url: `http://${host}:${endpoint.port}/webhook/${automationId}`,
     hint:
@@ -78,13 +82,16 @@ export function AutomationWebhookSection({
   draft,
   automationId,
   webhookEndpoint,
+  remoteHost = false,
   pickerTriggerClassName,
   toggleItemClassName,
   onDraftChange,
   onGenerateSecret
 }: AutomationWebhookSectionProps): React.JSX.Element {
-  const { url, hint } = resolveWebhookUrl(webhookEndpoint, automationId)
-  const showSecret = draft.webhookSecretMode !== 'none'
+  const { url, hint } = remoteHost
+    ? { url: null, hint: 'Configure the receiver and copy its URL on the automation host.' }
+    : resolveWebhookUrl(webhookEndpoint, automationId)
+  const showSecret = (draft.webhookSecretMode ?? 'none') !== 'none'
 
   return (
     <div className="mt-4 space-y-3 rounded-md border border-border p-3">
@@ -160,13 +167,12 @@ export function AutomationWebhookSection({
             )}
           >
             <Select
-              value={draft.webhookSecretMode}
-              onValueChange={(value) =>
-                onDraftChange((current) => ({
-                  ...current,
-                  webhookSecretMode: value as AutomationWebhookSecretMode
-                }))
-              }
+              value={draft.webhookSecretMode ?? 'none'}
+              onValueChange={(value) => {
+                if (value === 'none' || value === 'token' || value === 'hmac_sha256') {
+                  onDraftChange((current) => ({ ...current, webhookSecretMode: value }))
+                }
+              }}
             >
               <SelectTrigger className={`w-full ${pickerTriggerClassName}`}>
                 <SelectValue />
@@ -214,7 +220,7 @@ export function AutomationWebhookSection({
             >
               <div className="flex items-center gap-2">
                 <Input
-                  value={draft.webhookSecret}
+                  value={draft.webhookSecret ?? ''}
                   placeholder={translate(
                     'auto.components.automations.AutomationWebhookSection.0edb757986',
                     'Shared secret'

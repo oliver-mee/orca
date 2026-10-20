@@ -8,11 +8,7 @@
 
 import type { Page } from '@stablyai/playwright-test'
 import { expect } from '@stablyai/playwright-test'
-import {
-  type BrowserTabSummary,
-  type ExplorerFileSummary,
-  type TerminalTabSummary
-} from './runtime-types'
+import type { BrowserTabSummary, ExplorerFileSummary } from './runtime-types'
 
 /** Read a value from the Zustand store. Returns the raw JS value. */
 export async function getStoreState<T>(page: Page, selector: string): Promise<T> {
@@ -61,12 +57,10 @@ export async function getWorktreeTabs(
     }
 
     const state = store.getState()
-    return (state.tabsByWorktree[worktreeId] ?? []).map(
-      (tab): TerminalTabSummary => ({
-        id: tab.id,
-        title: tab.customTitle || tab.title
-      })
-    )
+    return (state.tabsByWorktree[worktreeId] ?? []).map((tab) => ({
+      id: tab.id,
+      title: tab.customTitle || tab.title
+    }))
   }, worktreeId)
 }
 
@@ -92,7 +86,7 @@ export async function getTabBarOrder(page: Page, worktreeId: string): Promise<st
     const activeGroup = activeGroupId
       ? groups.find((g: { id: string }) => g.id === activeGroupId)
       : groups[0]
-    if (activeGroup?.tabOrder?.length > 0) {
+    if (activeGroup?.tabOrder && activeGroup.tabOrder.length > 0) {
       const unifiedTabs = state.unifiedTabsByWorktree?.[worktreeId] ?? []
       return activeGroup.tabOrder.map((itemId: string) => {
         const tab = unifiedTabs.find((t: { id: string }) => t.id === itemId)
@@ -120,13 +114,11 @@ export async function getBrowserTabs(
     }
 
     const state = store.getState()
-    return (state.browserTabsByWorktree[worktreeId] ?? []).map(
-      (tab): BrowserTabSummary => ({
-        id: tab.id,
-        url: tab.url,
-        title: tab.title
-      })
-    )
+    return (state.browserTabsByWorktree[worktreeId] ?? []).map((tab): BrowserTabSummary => ({
+      id: tab.id,
+      url: tab.url,
+      title: tab.title
+    }))
   }, worktreeId)
 }
 
@@ -144,13 +136,11 @@ export async function getOpenFiles(
     const state = store.getState()
     return state.openFiles
       .filter((file) => file.worktreeId === worktreeId)
-      .map(
-        (file): ExplorerFileSummary => ({
-          id: file.id,
-          filePath: file.filePath,
-          relativePath: file.relativePath
-        })
-      )
+      .map((file): ExplorerFileSummary => ({
+        id: file.id,
+        filePath: file.filePath,
+        relativePath: file.relativePath
+      }))
   }, worktreeId)
 }
 
@@ -160,6 +150,22 @@ export async function waitForSessionReady(page: Page, timeoutMs = 30_000): Promi
     .poll(async () => getStoreState<boolean>(page, 'workspaceSessionReady'), {
       timeout: timeoutMs,
       message: 'workspaceSessionReady did not become true'
+    })
+    .toBe(true)
+}
+
+/**
+ * Wait until the deferred startup worktree scan has completed.
+ *
+ * Why: hydration fires an unawaited full catalog refresh after
+ * `workspaceSessionReady`; a fixture seeded before it lands is silently
+ * overwritten when it does.
+ */
+export async function waitForStartupWorktreeRefresh(page: Page, timeoutMs = 60_000): Promise<void> {
+  await expect
+    .poll(async () => getStoreState<boolean>(page, 'startupWorktreeRefreshCompleted'), {
+      timeout: timeoutMs,
+      message: 'startupWorktreeRefreshCompleted did not become true'
     })
     .toBe(true)
 }
@@ -262,10 +268,13 @@ export async function switchToWorktree(page: Page, worktreeId: string): Promise<
  * hidden-window mode and avoids racing that initial auto-create step.
  */
 export async function ensureTerminalVisible(page: Page, timeoutMs = 10_000): Promise<void> {
+  // Why the grace: in a layout-owner build the first tab arrives a frame after activation; a tab
+  // made here meanwhile would be a second one.
+  const createAfter = Date.now() + Math.min(5_000, timeoutMs / 2)
   await expect
     .poll(
       async () =>
-        page.evaluate(() => {
+        page.evaluate((mayCreate) => {
           const store = window.__store
           if (!store) {
             return false
@@ -285,17 +294,20 @@ export async function ensureTerminalVisible(page: Page, timeoutMs = 10_000): Pro
           }
 
           const tabs = state.tabsByWorktree[worktreeId] ?? []
-          const activeTab =
+          const shownTab =
             tabs.find((tab) => tab.id === state.activeTabIdByWorktree[worktreeId]) ??
             tabs.find((tab) => tab.id === state.activeTabId) ??
-            tabs[0] ??
-            // Why: fresh isolated E2E profiles may not have finished the UI-driven
-            // auto-create effect yet. Use the same store action to create the first
-            // terminal tab so terminal-focused specs start from a stable baseline.
-            state.createTab(worktreeId)
+            tabs[0]
+          if (!shownTab && !mayCreate) {
+            return false
+          }
+          // Why: fresh isolated E2E profiles may not have finished the UI-driven
+          // auto-create effect yet. Use the same store action to create the first
+          // terminal tab so terminal-focused specs start from a stable baseline.
+          const activeTab = shownTab ?? state.createTab(worktreeId)
           state.setActiveTab(activeTab.id)
           if (state.activeTabType !== 'terminal') {
-            state.setActiveTabType('terminal')
+            state.setActiveTabType('terminal', window.__store?.getState().activeWorktreeId ?? null)
           }
 
           state = store.getState()
@@ -305,7 +317,7 @@ export async function ensureTerminalVisible(page: Page, timeoutMs = 10_000): Pro
           return (state.tabsByWorktree[worktreeId] ?? []).some(
             (tab) => tab.id === state.activeTabId
           )
-        }),
+        }, Date.now() >= createAfter),
       { timeout: timeoutMs, message: 'No active terminal tab found for current worktree' }
     )
     .toBe(true)

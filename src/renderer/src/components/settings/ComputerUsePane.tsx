@@ -1,34 +1,15 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
-import {
-  Accessibility,
-  Camera,
-  ExternalLink,
-  MonitorCog,
-  RefreshCw,
-  ShieldCheck
-} from 'lucide-react'
+import { Accessibility, Camera, ExternalLink, RefreshCw, ShieldCheck } from 'lucide-react'
 import { toast } from 'sonner'
 import type {
   ComputerUsePermissionId,
   ComputerUsePermissionState,
   ComputerUsePermissionStatus
 } from '../../../../shared/computer-use-permissions-types'
-import {
-  COMPUTER_USE_SKILL_INSTALL_COMMAND,
-  COMPUTER_USE_SKILL_NAME
-} from '@/lib/agent-feature-install-commands'
-import {
-  AGENT_SKILL_CLI_PREREQUISITE_NOTICE,
-  ensureOrcaCliAvailableForAgentSkillTerminal
-} from '@/lib/agent-skill-cli-prerequisite'
-import {
-  GLOBAL_AGENT_SKILL_SOURCE_KINDS,
-  useInstalledAgentSkill
-} from '@/hooks/useInstalledAgentSkills'
 import { useAppStore } from '@/store'
 import { Button } from '../ui/button'
 import { Badge } from '../ui/badge'
-import { AgentSkillSetupPanel } from './AgentSkillSetupPanel'
+import { ComputerUseSkillSetupPanel } from './ComputerUseSkillSetupPanel'
 import { translate } from '@/i18n/i18n'
 export { getComputerUsePaneSearchEntries } from './computer-use-search'
 
@@ -63,12 +44,12 @@ const PERMISSIONS: PermissionDefinition[] = [
 function statusLabel(status: ComputerUsePermissionStatus | undefined): string {
   switch (status) {
     case 'granted':
-      return 'Granted'
+      return translate('auto.components.settings.ComputerUsePane.statusGranted', 'Granted')
     case 'unsupported':
-      return 'macOS only'
+      return translate('auto.components.settings.ComputerUsePane.statusUnsupported', 'macOS only')
     case 'not-granted':
     case undefined:
-      return 'Not enabled'
+      return translate('auto.components.settings.ComputerUsePane.statusNotEnabled', 'Not enabled')
   }
 }
 
@@ -90,14 +71,6 @@ export function ComputerUsePane(): React.JSX.Element {
   const permissionOperationSequence = useRef(0)
   const mountedRef = useRef(true)
   const [helperUnavailableReason, setHelperUnavailableReason] = useState<string | null>(null)
-  const {
-    installed: computerUseSkillDetected,
-    loading: computerUseSkillLoading,
-    error: computerUseSkillError,
-    refresh: refreshComputerUseSkill
-  } = useInstalledAgentSkill(COMPUTER_USE_SKILL_NAME, {
-    sourceKinds: GLOBAL_AGENT_SKILL_SOURCE_KINDS
-  })
 
   const stateById = useMemo(
     () => new Map(states.map((state) => [state.id, state.status] as const)),
@@ -112,21 +85,51 @@ export function ComputerUsePane(): React.JSX.Element {
   const resetAccessDisabled =
     resetting || loading || states.length === 0 || pendingId !== null || setupUnavailable
   const summaryTitle = checking
-    ? 'Checking Computer Use access.'
+    ? translate(
+        'auto.components.settings.computerUseSummary.checkingTitle',
+        'Checking Computer Use access.'
+      )
     : setupUnavailable
-      ? 'Computer Use is unavailable.'
+      ? translate(
+          'auto.components.settings.computerUseSummary.unavailableTitle',
+          'Computer Use is unavailable.'
+        )
       : allGranted
-        ? 'Computer Use is ready.'
-        : 'Finish setup to use local apps.'
+        ? translate(
+            'auto.components.settings.computerUseSummary.readyTitle',
+            'Computer Use is ready.'
+          )
+        : translate(
+            'auto.components.settings.computerUseSummary.permissionsTitle',
+            'Finish setup to use local apps.'
+          )
+  const missingCount = PERMISSIONS.length - grantedCount
   const summaryDescription = checking
-    ? 'Orca is checking macOS privacy permissions for the Computer Use helper.'
+    ? translate(
+        'auto.components.settings.computerUseSummary.checkingDescription',
+        'Orca is checking macOS privacy permissions for the Computer Use helper.'
+      )
     : setupUnavailable
-      ? `Computer Use permissions are unavailable because ${helperUnavailableReason}.`
+      ? translate(
+          'auto.components.settings.computerUseSummary.unavailableDescription',
+          'Computer Use permissions are unavailable because {{value0}}.',
+          { value0: helperUnavailableReason }
+        )
       : allGranted
-        ? 'Agents can inspect and operate app windows when you ask.'
-        : `${PERMISSIONS.length - grantedCount} permission${
-            PERMISSIONS.length - grantedCount === 1 ? '' : 's'
-          } required before agents can operate app windows.`
+        ? translate(
+            'auto.components.settings.computerUseSummary.readyDescription',
+            'Agents can inspect and operate app windows when you ask.'
+          )
+        : missingCount === 1
+          ? translate(
+              'auto.components.settings.computerUseSummary.permissionsRequired_one',
+              '1 permission required before agents can operate app windows.'
+            )
+          : translate(
+              'auto.components.settings.computerUseSummary.permissionsRequired_other',
+              '{{value0}} permissions required before agents can operate app windows.',
+              { value0: missingCount }
+            )
 
   useEffect(() => {
     mountedRef.current = true
@@ -382,30 +385,7 @@ export function ComputerUsePane(): React.JSX.Element {
         </>
       ) : null}
 
-      <AgentSkillSetupPanel
-        title={translate(
-          'auto.components.settings.ComputerUsePane.93255aaf18',
-          'Computer Use skill'
-        )}
-        description={translate(
-          'auto.components.settings.ComputerUsePane.1735461723',
-          'Enables agents to inspect and operate local desktop apps.'
-        )}
-        command={COMPUTER_USE_SKILL_INSTALL_COMMAND}
-        terminalTitle="Computer Use setup"
-        terminalAriaLabel="Computer Use skill install terminal"
-        terminalWorktreeId="settings-computer-use-skill-terminal"
-        installed={computerUseSkillDetected}
-        loading={computerUseSkillLoading}
-        error={computerUseSkillError}
-        icon={<MonitorCog className="size-5" />}
-        preInstallNotice={AGENT_SKILL_CLI_PREREQUISITE_NOTICE}
-        onBeforeOpenTerminal={async () => {
-          useAppStore.getState().recordFeatureInteraction('computer-use-setup')
-          await ensureOrcaCliAvailableForAgentSkillTerminal()
-        }}
-        onRecheck={refreshComputerUseSkill}
-      />
+      <ComputerUseSkillSetupPanel />
     </div>
   )
 }

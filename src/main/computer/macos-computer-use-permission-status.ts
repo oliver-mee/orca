@@ -1,8 +1,8 @@
-import { spawn } from 'child_process'
-import { mkdtemp, readFile, rm, stat } from 'fs/promises'
-import { tmpdir } from 'os'
-import { join } from 'path'
-import { setTimeout as delay } from 'timers/promises'
+import { spawn } from 'node:child_process'
+import { mkdtemp, readFile, rm, stat } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { setTimeout as delay } from 'node:timers/promises'
 import type {
   ComputerUsePermissionId,
   ComputerUsePermissionStatus,
@@ -13,6 +13,7 @@ import {
   resolveMacOSComputerUseExecutablePath
 } from './macos-native-provider-paths'
 import { RuntimeClientError } from './runtime-client-error'
+import { stopMacOSPermissionStatusHelper } from './macos-computer-use-permission-status-cleanup'
 
 const PERMISSION_STATUS_HELPER_LAUNCH_TIMEOUT_MS = 5_000
 
@@ -95,6 +96,8 @@ async function readPermissionStatusFromHelperApp(
     }
     throw new RuntimeClientError('accessibility_error', 'Timed out checking permissions')
   } finally {
+    // Do not wait for helper cleanup before returning its permission status.
+    void stopMacOSPermissionStatusHelper(statusPath)
     await rm(tempDir, { recursive: true, force: true })
   }
 }

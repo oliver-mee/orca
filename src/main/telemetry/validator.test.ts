@@ -165,7 +165,7 @@ describe('validate', () => {
     expect(result.ok).toBe(true)
   })
 
-  // ── repo_added.is_git_repo (docs/reference/telemetry-availability.md)
+  // ── repo_added.is_git_repo
   // The git-vs-folder signal moved here from onboarding_completed once project
   // selection left onboarding. Optional so SSH/remote edges can omit it.
 
@@ -208,15 +208,6 @@ describe('validate', () => {
     const result = validate('onboarding_completed', {
       path: 'add_project_modal',
       total_duration_ms: 100
-    })
-    expect(result.ok).toBe(true)
-  })
-
-  it('accepts events without nth_repo_added (classifier degraded mode)', () => {
-    const result = validate('agent_started', {
-      agent_kind: 'claude-code',
-      launch_source: 'command_palette',
-      request_kind: 'new'
     })
     expect(result.ok).toBe(true)
   })

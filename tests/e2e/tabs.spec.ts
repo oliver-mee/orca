@@ -18,8 +18,9 @@
  * (dnd-kit reorder); in those cases a DOM assertion still follows.
  */
 
-import { test, expect } from './helpers/orca-app'
+import { rm } from 'node:fs/promises'
 import type { Page } from '@stablyai/playwright-test'
+import { test, expect } from './helpers/orca-app'
 import {
   waitForSessionReady,
   waitForActiveWorktree,
@@ -28,13 +29,30 @@ import {
   getActiveTabType,
   getWorktreeTabs,
   getTabBarOrder,
-  ensureTerminalVisible
+  ensureTerminalVisible,
+  waitForStartupWorktreeRefresh
 } from './helpers/store'
 
 const SORTABLE_TAB = '[data-testid="sortable-tab"]'
 
 function tabLocator(page: Page, tabId: string) {
   return page.locator(`${SORTABLE_TAB}[data-tab-id="${tabId}"]`).first()
+}
+
+async function closeTabFromTabBar(page: Page, tabId: string): Promise<void> {
+  const tab = tabLocator(page, tabId)
+  await tab.hover()
+  await tab.getByRole('button', { name: /^Close tab /i }).click()
+  const confirmation = page.getByRole('dialog', { name: 'Stop running command?' })
+  // A shell still starting under load may require the running-command confirmation.
+  await expect
+    .poll(async () => (await confirmation.isVisible()) || (await tab.count()) === 0, {
+      timeout: 5_000
+    })
+    .toBe(true)
+  if (await confirmation.isVisible()) {
+    await confirmation.getByRole('button', { name: 'Stop and Close', exact: true }).click()
+  }
 }
 
 /** Count rendered tabs in the tab bar (user-visible, not store-level). */
@@ -68,8 +86,11 @@ async function getFocusedTerminalTabId(page: Page): Promise<string | null> {
 test.describe('Tabs', () => {
   test.beforeEach(async ({ orcaPage }) => {
     await waitForSessionReady(orcaPage)
+    await waitForStartupWorktreeRefresh(orcaPage)
     await waitForActiveWorktree(orcaPage)
     await ensureTerminalVisible(orcaPage)
+    const initialTabId = (await getActiveTabId(orcaPage))!
+    await expect(tabLocator(orcaPage, initialTabId)).toBeVisible()
   })
 
   /**
@@ -91,7 +112,7 @@ test.describe('Tabs', () => {
     // Why: the "+" dropdown uses Radix <DropdownMenuItem>, which exposes the
     // label text as the accessible name once the menu is open.
     const newTerminalMenuItem = orcaPage.getByRole('menuitem', { name: /New Terminal/i }).first()
-    await newTerminalMenuItem.click({ force: true })
+    await newTerminalMenuItem.click()
     await expect(newTerminalMenuItem).toBeHidden({ timeout: 3_000 })
 
     // Final assertion is on the rendered tab count — the tab bar itself must
@@ -116,6 +137,65 @@ test.describe('Tabs', () => {
         message: 'Menu-created terminal tab did not receive keyboard focus'
       })
       .toBe(storeActiveId)
+  })
+
+  test('clicking "+" then "New Markdown" focuses the editor', async ({
+    orcaPage,
+    registerPostElectronShutdownCleanup
+  }) => {
+    let createdFilePath: string | null = null
+    registerPostElectronShutdownCleanup(async () => {
+      if (createdFilePath) {
+        await rm(createdFilePath, { force: true })
+      }
+    })
+
+    const preExistingFileIds = await orcaPage.evaluate(
+      () => window.__store?.getState().openFiles.map((file) => file.id) ?? []
+    )
+
+    await orcaPage.getByRole('button', { name: 'New tab' }).click({ force: true })
+    const newMarkdownMenuItem = orcaPage.getByRole('menuitem', { name: /New Markdown/i }).first()
+    await newMarkdownMenuItem.click()
+
+    // Why: require an id that did not exist before the click, so an already-open
+    // Markdown file can't satisfy the assertions (or be deleted by cleanup), and
+    // record the path here so cleanup still has it if a later assertion fails.
+    const createdFileHandle = await orcaPage.waitForFunction(
+      (knownFileIds) => {
+        const state = window.__store?.getState()
+        const file = state?.openFiles.find((candidate) => candidate.id === state.activeFileId)
+        if (!file || knownFileIds.includes(file.id)) {
+          return null
+        }
+        return { id: file.id, filePath: file.filePath }
+      },
+      preExistingFileIds,
+      { timeout: 25_000 }
+    )
+    const createdFile = (await createdFileHandle.jsonValue())!
+    createdFilePath = createdFile.filePath
+
+    const editor = orcaPage.locator('.rich-markdown-editor')
+    await expect(editor).toBeVisible({ timeout: 25_000 })
+    await expect(newMarkdownMenuItem).toBeHidden({ timeout: 3_000 })
+
+    await expect
+      .poll(() => editor.evaluate((element) => document.activeElement === element), {
+        timeout: 5_000,
+        message: 'Menu-created Markdown editor did not receive keyboard focus'
+      })
+      .toBe(true)
+
+    const sentinel = `autofocus-${Date.now()}`
+    // Why: typing through the page keyboard proves focus landed without an editor click.
+    await orcaPage.keyboard.type(sentinel)
+    await expect(editor).toContainText(sentinel)
+
+    await orcaPage.evaluate((fileId) => {
+      window.__store?.getState().closeFile(fileId)
+    }, createdFile.id)
+    await expect(editor).toBeHidden()
   })
 
   /**
@@ -156,127 +236,71 @@ test.describe('Tabs', () => {
     await expect.poll(() => getDomActiveTabId(orcaPage), { timeout: 3_000 }).toBe(storeActiveId)
   })
 
-  /**
-   * User Prompt:
-   * - New tab works
-   *
-   * Why: we still use the store's `setActiveTab` for the switch itself (the
-   * hotkey path that used to be here turned out to target bracket-chord next/
-   * prev tab cycling, not arbitrary tab selection), but the final assertion
-   * checks DOM `data-active` to prove the selection actually paints onto the
-   * right tab element.
-   */
-  test('Cmd/Ctrl+Shift+] and Cmd/Ctrl+Shift+[ switch between tabs', async ({ orcaPage }) => {
+  test('clicking tabs still switches after dragging a terminal tab to reorder', async ({
+    orcaPage
+  }) => {
     const worktreeId = (await getActiveWorktreeId(orcaPage))!
-
-    // Ensure we have at least 2 tabs — use the real "+" flow so a render
-    // regression would fail setup before we even start the cycle check.
-    if ((await countRenderedTabs(orcaPage)) < 2) {
-      await orcaPage.getByRole('button', { name: 'New tab' }).click()
-      await orcaPage
-        .getByRole('menuitem', { name: /New Terminal/i })
-        .first()
-        .click()
-      await expect
-        .poll(() => countRenderedTabs(orcaPage), { timeout: 5_000 })
-        .toBeGreaterThanOrEqual(2)
-    }
-
-    const firstTabId = await getActiveTabId(orcaPage)
-    const orderedTabs = await getWorktreeTabs(orcaPage, worktreeId)
-    const secondTabId = orderedTabs.find((tab) => tab.id !== firstTabId)?.id
-    expect(secondTabId).toBeTruthy()
-
-    await orcaPage.evaluate((tabId) => {
-      window.__store?.getState().setActiveTab(tabId)
-    }, secondTabId)
-
-    // DOM assertion — the second tab must actually show the active indicator.
-    await expect.poll(() => getDomActiveTabId(orcaPage), { timeout: 3_000 }).toBe(secondTabId)
-
-    // Switch back.
-    await orcaPage.evaluate((tabId) => {
-      window.__store?.getState().setActiveTab(tabId)
-    }, firstTabId)
-    await expect.poll(() => getDomActiveTabId(orcaPage), { timeout: 3_000 }).toBe(firstTabId)
-  })
-
-  /**
-   * User Prompt:
-   * - dragging tabs around to reorder them
-   *
-   * Why the reorder is still store-driven: real dnd-kit pointer events are
-   * unreliable in the hidden-window Electron mode we run E2E in (pointer
-   * capture + collision detection interact poorly with `window.show()` being
-   * suppressed). We seed the post-drag state via `reorderUnifiedTabs` — the
-   * same action dnd-kit calls on drop — and then assert the tab bar's DOM
-   * order matches the new sequence. That final DOM check is what makes this
-   * a real test: a pure store round-trip would not catch a regression where
-   * the tab strip stopped re-rendering in the store's new order.
-   */
-  test('dragging a tab to a new position reorders it', async ({ orcaPage }) => {
-    const worktreeId = (await getActiveWorktreeId(orcaPage))!
-
-    if ((await countRenderedTabs(orcaPage)) < 2) {
-      await orcaPage.getByRole('button', { name: 'New tab' }).click()
-      await orcaPage
-        .getByRole('menuitem', { name: /New Terminal/i })
-        .first()
-        .click()
-      await expect
-        .poll(() => countRenderedTabs(orcaPage), { timeout: 5_000 })
-        .toBeGreaterThanOrEqual(2)
-    }
-
-    const domOrderBefore = await orcaPage.$$eval(SORTABLE_TAB, (nodes) =>
-      nodes.map((n) => (n as HTMLElement).dataset.tabId ?? '')
-    )
-    expect(domOrderBefore.length).toBeGreaterThanOrEqual(2)
 
     await orcaPage.evaluate((targetWorktreeId) => {
       const store = window.__store
       if (!store) {
         return
       }
-
       const state = store.getState()
-      const groups = state.groupsByWorktree[targetWorktreeId] ?? []
-      const activeGroupId = state.activeGroupIdByWorktree[targetWorktreeId]
-      const activeGroup = activeGroupId
-        ? groups.find((group) => group.id === activeGroupId)
-        : groups[0]
-
-      if (activeGroup?.tabOrder?.length >= 2) {
-        const nextOrder = [
-          activeGroup.tabOrder[1],
-          activeGroup.tabOrder[0],
-          ...activeGroup.tabOrder.slice(2)
-        ]
-        state.reorderUnifiedTabs(activeGroup.id, nextOrder)
-        return
-      }
-
-      const terminalOrder = (state.tabsByWorktree[targetWorktreeId] ?? []).map((tab) => tab.id)
-      if (terminalOrder.length >= 2) {
-        state.setTabBarOrder(targetWorktreeId, [
-          terminalOrder[1],
-          terminalOrder[0],
-          ...terminalOrder.slice(2)
-        ])
+      const existing = (state.tabsByWorktree[targetWorktreeId] ?? []).length
+      for (let i = existing; i < 2; i++) {
+        state.createTab(targetWorktreeId)
       }
     }, worktreeId)
+    await expect
+      .poll(() => countRenderedTabs(orcaPage), { timeout: 5_000 })
+      .toBeGreaterThanOrEqual(2)
 
-    // Final assertion: the tab strip must re-render with the swapped order.
-    // Keying off `data-tab-id` makes this independent of title formatting.
+    const domOrderBefore = await orcaPage.$$eval(SORTABLE_TAB, (nodes) =>
+      nodes.map((n) => (n as HTMLElement).dataset.tabId ?? '')
+    )
+    const [firstTabId, secondTabId] = domOrderBefore
+    expect(firstTabId).toBeTruthy()
+    expect(secondTabId).toBeTruthy()
+
+    await tabLocator(orcaPage, firstTabId).click({ force: true })
+    await expect.poll(() => getDomActiveTabId(orcaPage), { timeout: 3_000 }).toBe(firstTabId)
+
+    const firstTabBox = await tabLocator(orcaPage, firstTabId).boundingBox()
+    const secondTabBox = await tabLocator(orcaPage, secondTabId).boundingBox()
+    expect(firstTabBox).not.toBeNull()
+    expect(secondTabBox).not.toBeNull()
+    const startX = firstTabBox!.x + firstTabBox!.width / 2
+    const startY = firstTabBox!.y + firstTabBox!.height / 2
+    const endX = secondTabBox!.x + secondTabBox!.width * 0.75
+    const endY = secondTabBox!.y + secondTabBox!.height / 2
+    await orcaPage.mouse.move(startX, startY)
+    await orcaPage.mouse.down()
+    // Why: this mirrors the release repro: drag a terminal tab across another
+    // tab far enough for dnd-kit to commit a reorder, then release on the tab
+    // strip before clicking tabs again.
+    await orcaPage.mouse.move(endX, endY, { steps: 8 })
+    await orcaPage.mouse.up()
+
     await expect
       .poll(
         async () =>
           orcaPage.$$eval(SORTABLE_TAB, (nodes) =>
             nodes.map((n) => (n as HTMLElement).dataset.tabId ?? '')
           ),
-        { timeout: 3_000, message: 'Tab bar DOM order did not reflect the reorder' }
+        { timeout: 5_000, message: 'Terminal tab drag did not reorder the tab strip' }
       )
-      .toEqual([domOrderBefore[1], domOrderBefore[0], ...domOrderBefore.slice(2)])
+      .toEqual([secondTabId, firstTabId, ...domOrderBefore.slice(2)])
+
+    await tabLocator(orcaPage, firstTabId).click({ force: true })
+    await expect.poll(() => getDomActiveTabId(orcaPage), { timeout: 3_000 }).toBe(firstTabId)
+    await tabLocator(orcaPage, secondTabId).click({ force: true })
+    await expect
+      .poll(() => getDomActiveTabId(orcaPage), {
+        timeout: 5_000,
+        message: 'Tab click did not activate after a terminal tab reorder drag'
+      })
+      .toBe(secondTabId)
   })
 
   /**
@@ -309,7 +333,9 @@ test.describe('Tabs', () => {
       }
     }, worktreeId)
     await expect
-      .poll(async () => (await getWorktreeTabs(orcaPage, worktreeId)).length, { timeout: 5_000 })
+      .poll(async () => (await getWorktreeTabs(orcaPage, worktreeId)).length, {
+        timeout: 5_000
+      })
       .toBeGreaterThanOrEqual(3)
 
     const initialOrder = await getTabBarOrder(orcaPage, worktreeId)
@@ -336,7 +362,9 @@ test.describe('Tabs', () => {
       state.reorderUnifiedTabs(activeGroup.id, [...rest, first])
     }, worktreeId)
     await expect
-      .poll(async () => getTabBarOrder(orcaPage, worktreeId), { timeout: 3_000 })
+      .poll(async () => getTabBarOrder(orcaPage, worktreeId), {
+        timeout: 3_000
+      })
       .toEqual([b, c, a])
 
     // Activate the last tab in the new visible order, then walk left twice.
@@ -365,7 +393,7 @@ test.describe('Tabs', () => {
    * so the test fails if the store cleared the tab but the DOM didn't
    * re-render.
    */
-  test('closing a tab removes it from the tab bar', async ({ orcaPage }) => {
+  test('closing the active tab removes it and activates a neighbor', async ({ orcaPage }) => {
     const worktreeId = (await getActiveWorktreeId(orcaPage))!
 
     // Need a second tab so we can close one without deactivating the worktree.
@@ -386,12 +414,7 @@ test.describe('Tabs', () => {
     const tabsBefore = await countRenderedTabs(orcaPage)
     const activeId = await getActiveTabId(orcaPage)
     expect(activeId).not.toBeNull()
-    const activeTab = tabLocator(orcaPage, activeId!)
-    // Why: hover the tab first so the close button reveals its hover style.
-    // The button is interactive regardless but hovering matches real user
-    // behaviour and keeps click coordinates stable.
-    await activeTab.hover()
-    await activeTab.getByRole('button', { name: /^Close tab /i }).click()
+    await closeTabFromTabBar(orcaPage, activeId!)
 
     await expect
       .poll(() => countRenderedTabs(orcaPage), {
@@ -399,47 +422,7 @@ test.describe('Tabs', () => {
         message: 'Clicking close did not remove the tab element from the DOM'
       })
       .toBe(tabsBefore - 1)
-  })
-
-  /**
-   * User Prompt:
-   * - closing tabs works
-   *
-   * The DOM check (`data-active="true"` lands on a different element) proves
-   * the tab bar re-paints the active indicator after a close — a store-only
-   * check would pass even if the indicator failed to shift.
-   */
-  test('closing the active tab activates a neighbor tab', async ({ orcaPage }) => {
-    const worktreeId = (await getActiveWorktreeId(orcaPage))!
-
-    await orcaPage.evaluate((targetWorktreeId) => {
-      const store = window.__store
-      if (!store) {
-        return
-      }
-      const state = store.getState()
-      if ((state.tabsByWorktree[targetWorktreeId] ?? []).length < 2) {
-        state.createTab(targetWorktreeId)
-      }
-    }, worktreeId)
-    await expect
-      .poll(() => countRenderedTabs(orcaPage), { timeout: 5_000 })
-      .toBeGreaterThanOrEqual(2)
-
-    const activeTabBefore = await getActiveTabId(orcaPage)
-    expect(activeTabBefore).not.toBeNull()
-
-    const activeTab = tabLocator(orcaPage, activeTabBefore!)
-    await activeTab.hover()
-    await activeTab.getByRole('button', { name: /^Close tab /i }).click()
-
-    // Final DOM assertion: some *other* tab element now carries data-active.
-    await expect
-      .poll(() => getDomActiveTabId(orcaPage), {
-        timeout: 5_000,
-        message: 'After closing the active tab, no neighbor tab took over the active indicator'
-      })
-      .not.toBe(activeTabBefore)
+    await expect.poll(() => getDomActiveTabId(orcaPage), { timeout: 5_000 }).not.toBe(activeId)
     await expect.poll(() => getDomActiveTabId(orcaPage), { timeout: 5_000 }).not.toBeNull()
   })
 })

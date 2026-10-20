@@ -1,5 +1,4 @@
 import React, { useCallback, useRef, useState } from 'react'
-import { toast } from 'sonner'
 import { FolderPlus, Loader2 } from 'lucide-react'
 import {
   Dialog,
@@ -12,10 +11,10 @@ import {
 import { Button } from '@/components/ui/button'
 import { useMountedRef } from '@/hooks/useMountedRef'
 import { useAppStore } from '@/store'
-import type { Repo } from '../../../../shared/types'
 import { isGitRepoKind } from '../../../../shared/repo-kind'
 import { finishProjectAddWithDefaultCheckout } from './project-added-default-checkout'
 import { translate } from '@/i18n/i18n'
+import { worktreeRefreshOptions } from './add-repo-runtime-owner'
 
 const NON_GIT_REPO_ERROR = 'Not a valid git repository'
 
@@ -36,7 +35,8 @@ const AddProjectFromFolderDialog = React.memo(function AddProjectFromFolderDialo
   const isOpen = activeModal === 'confirm-add-project-from-folder'
   const [previousOpen, setPreviousOpen] = useState(isOpen)
   const folderPath = typeof modalData.folderPath === 'string' ? modalData.folderPath : ''
-  const connectionId = typeof modalData.connectionId === 'string' ? modalData.connectionId : ''
+  const runtimeEnvironmentId =
+    typeof modalData.runtimeEnvironmentId === 'string' ? modalData.runtimeEnvironmentId : null
 
   if (isOpen !== previousOpen) {
     setPreviousOpen(isOpen)
@@ -53,9 +53,11 @@ const AddProjectFromFolderDialog = React.memo(function AddProjectFromFolderDialo
     closeModal()
     openModal('confirm-non-git-folder', {
       folderPath,
-      ...(connectionId ? { connectionId } : {})
+      // Absence === local: NonGitFolderDialog coerces a missing/empty
+      // runtimeEnvironmentId to null, so omitting the spread signals local.
+      ...(runtimeEnvironmentId ? { runtimeEnvironmentId } : {})
     })
-  }, [closeModal, connectionId, folderPath, openModal])
+  }, [closeModal, folderPath, openModal, runtimeEnvironmentId])
 
   const handleConfirm = useCallback(async () => {
     if (!folderPath || isAdding) {
@@ -65,39 +67,9 @@ const AddProjectFromFolderDialog = React.memo(function AddProjectFromFolderDialo
     setIsAdding(true)
     setError(null)
     try {
-      let repo: Repo | null
-      if (connectionId) {
-        const result = await window.api.repos.addRemote({
-          connectionId,
-          remotePath: folderPath
-        })
-        if ('error' in result) {
-          throw new Error(result.error)
-        }
-        repo = result.repo
-        const state = useAppStore.getState()
-        const existingIdx = state.repos.findIndex((r) => r.id === repo?.id)
-        if (existingIdx !== -1) {
-          state.clearOrcaHookTrustForRepo(repo.id)
-          const updated = [...state.repos]
-          updated[existingIdx] = repo
-          useAppStore.setState({ repos: updated })
-        } else {
-          useAppStore.setState({ repos: [...state.repos, repo] })
-        }
-        if (!mountedRef.current || gen !== addGenRef.current) {
-          return
-        }
-        toast.success(
-          translate(
-            'auto.components.sidebar.AddProjectFromFolderDialog.e643b30398',
-            'Project added on SSH host'
-          ),
-          { description: repo.displayName }
-        )
-      } else {
-        repo = await addRepoPath(folderPath)
-      }
+      const repo = await addRepoPath(folderPath, 'git', {
+        runtimeEnvironmentId
+      })
 
       if (!mountedRef.current || gen !== addGenRef.current) {
         return
@@ -111,13 +83,16 @@ const AddProjectFromFolderDialog = React.memo(function AddProjectFromFolderDialo
       }
       // Why: after the repo is already added, a non-authoritative refresh
       // should still close onto the project row instead of trapping the user.
-      await fetchWorktrees(repo.id, { requireAuthoritative: true })
+      const ownerOptions = worktreeRefreshOptions(runtimeEnvironmentId)
+      await fetchWorktrees(repo.id, ownerOptions)
       if (!mountedRef.current || gen !== addGenRef.current) {
         return
       }
       await finishProjectAddWithDefaultCheckout({
         repoId: repo.id,
-        source: connectionId ? 'ssh_remote_path' : 'local_folder_picker',
+        source: runtimeEnvironmentId ? 'runtime_server_path' : 'local_folder_picker',
+        selectedPath: folderPath,
+        executionHostId: ownerOptions.executionHostId,
         closeModal,
         setHideDefaultBranchWorkspace
       })
@@ -140,12 +115,12 @@ const AddProjectFromFolderDialog = React.memo(function AddProjectFromFolderDialo
   }, [
     addRepoPath,
     closeModal,
-    connectionId,
     fetchWorktrees,
     folderPath,
     isAdding,
     mountedRef,
     openNonGitConfirmation,
+    runtimeEnvironmentId,
     setHideDefaultBranchWorkspace
   ])
 

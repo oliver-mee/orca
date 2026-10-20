@@ -1,4 +1,5 @@
 import type { AgentCatalogEntry } from '@/lib/agent-catalog'
+import { isClipboardTextByteLengthOverLimit } from '../../../shared/clipboard-text'
 
 type RankedAgent = {
   agent: AgentCatalogEntry
@@ -7,6 +8,14 @@ type RankedAgent = {
 }
 
 const NO_MATCH = Number.POSITIVE_INFINITY
+export const AGENT_PICKER_QUERY_MAX_BYTES = 2 * 1024
+
+function isAgentPickerQueryTooLarge(
+  query: string,
+  maxBytes = AGENT_PICKER_QUERY_MAX_BYTES
+): boolean {
+  return isClipboardTextByteLengthOverLimit(query, maxBytes)
+}
 
 export function getAgentPickerCommandValue({
   blankValue,
@@ -21,7 +30,11 @@ export function getAgentPickerCommandValue({
   filteredAgents: readonly AgentCatalogEntry[]
   rawQuery: string
 }): string {
-  if (!normalizeSearchText(rawQuery)) {
+  const query = getAgentPickerSearchQuery(rawQuery)
+  if (query === null) {
+    return ''
+  }
+  if (!query) {
     return currentValue ?? blankValue
   }
   if (blankMatchesQuery) {
@@ -34,7 +47,10 @@ export function searchAgentPickerEntries(
   agents: readonly AgentCatalogEntry[],
   rawQuery: string
 ): AgentCatalogEntry[] {
-  const query = normalizeSearchText(rawQuery)
+  const query = getAgentPickerSearchQuery(rawQuery)
+  if (query === null) {
+    return []
+  }
   if (!query) {
     return [...agents]
   }
@@ -52,7 +68,10 @@ export function searchAgentPickerEntries(
 }
 
 export function agentPickerBlankTerminalMatches(rawQuery: string): boolean {
-  const query = normalizeSearchText(rawQuery)
+  const query = getAgentPickerSearchQuery(rawQuery)
+  if (query === null) {
+    return false
+  }
   if (!query) {
     return true
   }
@@ -67,19 +86,25 @@ export function agentPickerBlankTerminalMatches(rawQuery: string): boolean {
 function scoreAgent(agent: AgentCatalogEntry, query: string): number {
   return Math.min(
     scoreCandidate(query, agent.label, 0),
-    scoreCandidate(query, agent.id, 600),
-    scoreCandidate(query, agent.cmd, 650)
+    scoreCandidate(query, agent.id, 600, 1),
+    scoreCandidate(query, agent.cmd, 650, 2),
+    ...(agent.searchAliases ?? []).map((alias) => scoreCandidate(query, alias, 650, 2))
   )
 }
 
-function scoreCandidate(query: string, rawCandidate: string, baseScore: number): number {
+function scoreCandidate(
+  query: string,
+  rawCandidate: string,
+  baseScore: number,
+  exactScore = baseScore
+): number {
   const candidate = normalizeSearchText(rawCandidate)
   if (!candidate) {
     return NO_MATCH
   }
 
   if (candidate === query) {
-    return baseScore
+    return exactScore
   }
   if (candidate.startsWith(query)) {
     return baseScore + 10
@@ -178,5 +203,42 @@ function isBoundary(value: string, index: number): boolean {
 }
 
 function normalizeSearchText(value: string): string {
-  return value.trim().toLowerCase().replace(/\s+/g, ' ')
+  let normalized = ''
+  let pendingWhitespace = false
+  for (let index = 0; index < value.length; index += 1) {
+    const code = value.charCodeAt(index)
+    if (isAgentPickerWhitespace(code)) {
+      pendingWhitespace = normalized.length > 0
+      continue
+    }
+    if (pendingWhitespace) {
+      normalized += ' '
+      pendingWhitespace = false
+    }
+    normalized += value.charAt(index).toLowerCase()
+  }
+  return normalized
+}
+
+function getAgentPickerSearchQuery(rawQuery: string): string | null {
+  if (isAgentPickerQueryTooLarge(rawQuery)) {
+    return null
+  }
+  return normalizeSearchText(rawQuery)
+}
+
+function isAgentPickerWhitespace(code: number): boolean {
+  return (
+    code === 32 ||
+    (code >= 9 && code <= 13) ||
+    code === 160 ||
+    code === 5760 ||
+    (code >= 8192 && code <= 8202) ||
+    code === 8232 ||
+    code === 8233 ||
+    code === 8239 ||
+    code === 8287 ||
+    code === 12288 ||
+    code === 65279
+  )
 }

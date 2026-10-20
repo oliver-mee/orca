@@ -1,5 +1,6 @@
-import { fork, type ChildProcess } from 'child_process'
-import { join } from 'path'
+import { fork, type ChildProcess } from 'node:child_process'
+import { getAppEnvironment, hasAppEnvironment } from '../../shared/app-environment'
+import { join } from 'node:path'
 import type {
   ComputerActionResult,
   ComputerListAppsResult,
@@ -8,6 +9,8 @@ import type {
   ComputerSnapshotResult
 } from '../../shared/runtime-types'
 import { normalizeComputerActionResult } from './computer-action-verification-normalization'
+import { isComputerSidecarDiagnostic, logComputerDiagnostic } from './computer-sidecar-diagnostics'
+import { validateComputerSidecarPasteText } from './computer-sidecar-paste-validation'
 import { RuntimeClientError } from './runtime-client-error'
 
 type ComputerSidecarMethod =
@@ -48,16 +51,6 @@ let sidecar: ComputerSidecarProcess | null = null
 // stale children keep a no-op listener that does not retain the sidecar owner.
 function ignoreStaleChildError(): void {}
 
-export function shouldUseComputerSidecar(): boolean {
-  return (
-    (process.platform === 'darwin' ||
-      process.platform === 'linux' ||
-      process.platform === 'win32') &&
-    typeof process.versions.electron === 'string' &&
-    process.env.ORCA_COMPUTER_SIDECAR !== '1'
-  )
-}
-
 export async function callComputerSidecarListApps(): Promise<ComputerListAppsResult> {
   return (await getComputerSidecar().call('listApps', {})) as ComputerListAppsResult
 }
@@ -85,6 +78,10 @@ export async function callComputerSidecarAction(
   >,
   params: unknown
 ): Promise<ComputerActionResult> {
+  const validation = validateComputerSidecarPasteText(method, params)
+  if (validation) {
+    await validation
+  }
   return normalizeComputerActionResult(
     (await getComputerSidecar().call(method, params)) as ComputerActionResult
   )
@@ -112,12 +109,15 @@ function getComputerSidecarEntryPath(): string {
   return join(basePath, 'out', 'main', 'computer-sidecar.js')
 }
 
+// Why the port and not require('electron'): the literal text fails the plain-Node
+// entry guard even inside a try/catch, and hasAppEnvironment() gives the same
+// "no app root here" answer without it.
 function loadElectronApp(): { getAppPath(): string; isPackaged: boolean } | null {
-  try {
-    return require('electron').app
-  } catch {
+  if (!hasAppEnvironment()) {
     return null
   }
+  const environment = getAppEnvironment()
+  return { getAppPath: () => environment.getAppPath(), isPackaged: environment.isPackaged() }
 }
 
 class ComputerSidecarProcess {
@@ -246,6 +246,11 @@ class ComputerSidecarProcess {
   }
 
   private handleMessage(message: unknown): void {
+    // The sidecar's stdio is piped and unread, so its warnings arrive here.
+    if (isComputerSidecarDiagnostic(message)) {
+      logComputerDiagnostic(message.message)
+      return
+    }
     if (!isSidecarResponse(message)) {
       return
     }

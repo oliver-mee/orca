@@ -1,18 +1,11 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
-import {
-  ActivityIndicator,
-  Pressable,
-  ScrollView,
-  StyleSheet,
-  Switch,
-  Text,
-  View
-} from 'react-native'
+import { useCallback, useEffect, useState } from 'react'
+import { ActivityIndicator, Pressable, StyleSheet, Switch, Text, View } from 'react-native'
 import { Check, Download } from 'lucide-react-native'
 import { BottomDrawer } from './BottomDrawer'
 import { colors, radii, spacing, typography } from '../theme/mobile-theme'
 import type { RpcClient } from '../transport/rpc-client'
 import { triggerError, triggerSuccess } from '../platform/haptics'
+import { useDictationSetupPoller } from '../dictation/use-dictation-setup-poller'
 import {
   downloadDictationModel,
   fetchDictationSetup,
@@ -32,7 +25,7 @@ type Props = {
   onReady?: () => void
 }
 
-function formatSize(bytes: number | null): string {
+function formatSize(bytes: number | null | undefined): string {
   if (!bytes) {
     return ''
   }
@@ -45,40 +38,34 @@ export function MobileDictationSetupSheet({ visible, client, onClose, onReady }:
   const [setup, setSetup] = useState<MobileSpeechSetup | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState<string | null>(null)
-  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
-
-  const refresh = useCallback(async () => {
+  const refresh = useCallback(async (): Promise<boolean | undefined> => {
     if (!client) {
-      return
+      return false
     }
     try {
-      setSetup(await fetchDictationSetup(client))
+      const next = await fetchDictationSetup(client)
+      setSetup(next)
+      setError(null)
+      return next.models.some(isModelInFlight)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load')
+      return undefined
     }
   }, [client])
+
+  const polling = setup?.models.some(isModelInFlight) ?? false
+  const refreshSetup = useDictationSetupPoller({
+    visible: visible && client !== null,
+    polling,
+    refresh,
+    intervalMs: POLL_INTERVAL_MS
+  })
 
   useEffect(() => {
     if (visible) {
       setError(null)
-      void refresh()
     }
-  }, [visible, refresh])
-
-  // Poll only while something is downloading/extracting; stop otherwise.
-  useEffect(() => {
-    const inFlight = setup?.models.some(isModelInFlight) ?? false
-    if (visible && inFlight && client) {
-      pollRef.current = setInterval(() => void refresh(), POLL_INTERVAL_MS)
-      return () => {
-        if (pollRef.current) {
-          clearInterval(pollRef.current)
-          pollRef.current = null
-        }
-      }
-    }
-    return undefined
-  }, [visible, setup, client, refresh])
+  }, [visible])
 
   const handleDownload = useCallback(
     async (model: MobileSpeechModel) => {
@@ -89,7 +76,7 @@ export function MobileDictationSetupSheet({ visible, client, onClose, onReady }:
       setError(null)
       try {
         await downloadDictationModel(client, model.id)
-        await refresh()
+        await refreshSetup()
       } catch (err) {
         triggerError()
         setError(err instanceof Error ? err.message : 'Download failed')
@@ -97,7 +84,7 @@ export function MobileDictationSetupSheet({ visible, client, onClose, onReady }:
         setBusy(null)
       }
     },
-    [client, refresh]
+    [client, refreshSetup]
   )
 
   const handleUseModel = useCallback(
@@ -139,7 +126,9 @@ export function MobileDictationSetupSheet({ visible, client, onClose, onReady }:
 
   return (
     <BottomDrawer visible={visible} onClose={onClose}>
-      <ScrollView keyboardShouldPersistTaps="handled" style={styles.scroll}>
+      {/* Why: BottomDrawer already scrolls its children in a keyboard-aware container;
+          a nested capped ScrollView cut off the lower controls. */}
+      <View>
         <Text style={styles.heading}>Set up voice dictation</Text>
         <Text style={styles.subtitle}>
           Download a model and enable dictation on your desktop — all from here.
@@ -227,13 +216,12 @@ export function MobileDictationSetupSheet({ visible, client, onClose, onReady }:
           </>
         )}
         {error ? <Text style={styles.error}>{error}</Text> : null}
-      </ScrollView>
+      </View>
     </BottomDrawer>
   )
 }
 
 const styles = StyleSheet.create({
-  scroll: { maxHeight: 460 },
   heading: {
     color: colors.textPrimary,
     fontSize: typography.bodySize,

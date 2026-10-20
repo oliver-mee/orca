@@ -1,9 +1,39 @@
 import type { AppState } from '../types'
 
-type OrphanTerminalDetectionState = Pick<
+type TerminalTabReconnectState = Pick<
   AppState,
-  'tabsByWorktree' | 'unifiedTabsByWorktree' | 'ptyIdsByTabId'
+  | 'ptyIdsByTabId'
+  | 'lastKnownRelayPtyIdByTabId'
+  | 'deferredSshSessionIdsByTabId'
+  | 'pendingReconnectPtyIdByTabId'
+  | 'unverifiedPtyLossTabIds'
 >
+
+type OrphanTerminalDetectionState = Pick<AppState, 'tabsByWorktree' | 'unifiedTabsByWorktree'> &
+  TerminalTabReconnectState
+
+/**
+ * Whether a tab is currently attached to, or actively reconnecting to, a live
+ * PTY. This deliberately checks only the live-attachment and reconnect maps —
+ * NOT terminalLayoutsByTabId leaf bindings, which are a persisted layout that
+ * can outlive its session (e.g. after an SSH target is removed) and must not
+ * keep a dead tab pinned in the orphan sweep. The reconnect maps are the ones
+ * retirement planning also honors as live ownership, so a tab it would tear
+ * down on close is never swept as a dead orphan first (#9911).
+ */
+export function terminalTabHasReconnectablePty(
+  state: TerminalTabReconnectState,
+  tabId: string,
+  rowPtyId: string | null | undefined
+): boolean {
+  return Boolean(
+    (state.ptyIdsByTabId[tabId]?.length ?? 0) > 0 ||
+    rowPtyId ||
+    state.lastKnownRelayPtyIdByTabId[tabId] ||
+    state.deferredSshSessionIdsByTabId[tabId] ||
+    state.pendingReconnectPtyIdByTabId[tabId]
+  )
+}
 
 type OrphanTerminalCleanupState = Pick<
   AppState,
@@ -14,8 +44,11 @@ type OrphanTerminalCleanupState = Pick<
   | 'canExpandPaneByTabId'
   | 'terminalLayoutsByTabId'
   | 'pendingStartupByTabId'
-  | 'pendingSetupSplitByTabId'
+  | 'pendingInitialCwdByTabId'
   | 'pendingIssueCommandSplitByTabId'
+  | 'automaticAgentResumeClaimsByTabId'
+  | 'nativeChatLaunchPromptByTabId'
+  | 'nativeChatLaunchDraftByTabId'
   | 'tabBarOrderByWorktree'
   | 'cacheTimerByKey'
   | 'activeTabIdByWorktree'
@@ -39,8 +72,17 @@ export function getOrphanTerminalIds(
         if (unifiedTerminalEntityIds.has(tab.id)) {
           return false
         }
-        const livePtyIds = state.ptyIdsByTabId[tab.id] ?? []
-        return livePtyIds.length === 0 && tab.ptyId == null
+        // A missing PTY is not proof that the user closed the tab: the host
+        // may have gone away and emitted a synthetic exit. Keep the row until
+        // a replacement binds or the user explicitly closes it.
+        if (state.unverifiedPtyLossTabIds[tab.id]) {
+          return false
+        }
+        // Why: a tab is orphaned only when it owns NO live/reconnecting PTY; a
+        // tab whose session survives in a reconnect map (SSH relay / daemon
+        // reattach) is alive and must not be swept before reconnect rebinds it
+        // (#9911).
+        return !terminalTabHasReconnectablePty(state, tab.id, tab.ptyId)
       })
       .map((tab) => tab.id)
   )
@@ -59,8 +101,11 @@ export function buildOrphanTerminalCleanupPatch(
   | 'canExpandPaneByTabId'
   | 'terminalLayoutsByTabId'
   | 'pendingStartupByTabId'
-  | 'pendingSetupSplitByTabId'
+  | 'pendingInitialCwdByTabId'
   | 'pendingIssueCommandSplitByTabId'
+  | 'automaticAgentResumeClaimsByTabId'
+  | 'nativeChatLaunchPromptByTabId'
+  | 'nativeChatLaunchDraftByTabId'
   | 'tabBarOrderByWorktree'
   | 'cacheTimerByKey'
   | 'activeTabIdByWorktree'
@@ -75,8 +120,11 @@ export function buildOrphanTerminalCleanupPatch(
       canExpandPaneByTabId: state.canExpandPaneByTabId,
       terminalLayoutsByTabId: state.terminalLayoutsByTabId,
       pendingStartupByTabId: state.pendingStartupByTabId,
-      pendingSetupSplitByTabId: state.pendingSetupSplitByTabId,
+      pendingInitialCwdByTabId: state.pendingInitialCwdByTabId,
       pendingIssueCommandSplitByTabId: state.pendingIssueCommandSplitByTabId,
+      automaticAgentResumeClaimsByTabId: state.automaticAgentResumeClaimsByTabId,
+      nativeChatLaunchPromptByTabId: state.nativeChatLaunchPromptByTabId,
+      nativeChatLaunchDraftByTabId: state.nativeChatLaunchDraftByTabId,
       tabBarOrderByWorktree: state.tabBarOrderByWorktree,
       cacheTimerByKey: state.cacheTimerByKey,
       activeTabIdByWorktree: state.activeTabIdByWorktree,
@@ -93,8 +141,13 @@ export function buildOrphanTerminalCleanupPatch(
   const nextCanExpandPaneByTabId = { ...state.canExpandPaneByTabId }
   const nextTerminalLayoutsByTabId = { ...state.terminalLayoutsByTabId }
   const nextPendingStartupByTabId = { ...state.pendingStartupByTabId }
-  const nextPendingSetupSplitByTabId = { ...state.pendingSetupSplitByTabId }
+  const nextPendingInitialCwdByTabId = { ...state.pendingInitialCwdByTabId }
   const nextPendingIssueCommandSplitByTabId = { ...state.pendingIssueCommandSplitByTabId }
+  const nextAutomaticAgentResumeClaimsByTabId = {
+    ...state.automaticAgentResumeClaimsByTabId
+  }
+  const nextNativeChatLaunchPromptByTabId = { ...state.nativeChatLaunchPromptByTabId }
+  const nextNativeChatLaunchDraftByTabId = { ...state.nativeChatLaunchDraftByTabId }
   const nextTabBarOrderByWorktree = {
     ...state.tabBarOrderByWorktree,
     [worktreeId]: (state.tabBarOrderByWorktree[worktreeId] ?? []).filter(
@@ -114,8 +167,11 @@ export function buildOrphanTerminalCleanupPatch(
     delete nextCanExpandPaneByTabId[orphanTabId]
     delete nextTerminalLayoutsByTabId[orphanTabId]
     delete nextPendingStartupByTabId[orphanTabId]
-    delete nextPendingSetupSplitByTabId[orphanTabId]
+    delete nextPendingInitialCwdByTabId[orphanTabId]
     delete nextPendingIssueCommandSplitByTabId[orphanTabId]
+    delete nextAutomaticAgentResumeClaimsByTabId[orphanTabId]
+    delete nextNativeChatLaunchPromptByTabId[orphanTabId]
+    delete nextNativeChatLaunchDraftByTabId[orphanTabId]
     for (const key of Object.keys(nextCacheTimerByKey)) {
       if (key.startsWith(`${orphanTabId}:`)) {
         delete nextCacheTimerByKey[key]
@@ -141,8 +197,11 @@ export function buildOrphanTerminalCleanupPatch(
     canExpandPaneByTabId: nextCanExpandPaneByTabId,
     terminalLayoutsByTabId: nextTerminalLayoutsByTabId,
     pendingStartupByTabId: nextPendingStartupByTabId,
-    pendingSetupSplitByTabId: nextPendingSetupSplitByTabId,
+    pendingInitialCwdByTabId: nextPendingInitialCwdByTabId,
     pendingIssueCommandSplitByTabId: nextPendingIssueCommandSplitByTabId,
+    automaticAgentResumeClaimsByTabId: nextAutomaticAgentResumeClaimsByTabId,
+    nativeChatLaunchPromptByTabId: nextNativeChatLaunchPromptByTabId,
+    nativeChatLaunchDraftByTabId: nextNativeChatLaunchDraftByTabId,
     tabBarOrderByWorktree: nextTabBarOrderByWorktree,
     cacheTimerByKey: nextCacheTimerByKey,
     activeTabIdByWorktree: nextActiveTabIdByWorktree,

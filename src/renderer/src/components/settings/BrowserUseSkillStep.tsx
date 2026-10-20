@@ -1,6 +1,6 @@
-import type { ReactNode } from 'react'
 import { AgentSkillSetupPanel } from './AgentSkillSetupPanel'
-import { StepBadge } from './BrowserUseStepBadge'
+import type { LocalAgentRuntime } from './CliSkillRuntimeSetup'
+import { StepBadge } from './SetupStepBadge'
 import { translate } from '@/i18n/i18n'
 
 type Props = {
@@ -9,7 +9,8 @@ type Props = {
   skillLoading: boolean
   skillError: string | null
   disabled?: boolean
-  preInstallNotice?: ReactNode
+  terminalShellOverride?: string
+  terminalRuntime?: LocalAgentRuntime
   onBeforeOpenTerminal?: () => void | Promise<void>
   onRecheck: () => void | Promise<unknown>
 }
@@ -20,7 +21,8 @@ export function BrowserUseSkillStep({
   skillLoading,
   skillError,
   disabled = false,
-  preInstallNotice,
+  terminalShellOverride,
+  terminalRuntime,
   onBeforeOpenTerminal,
   onRecheck
 }: Props): React.JSX.Element {
@@ -39,12 +41,13 @@ export function BrowserUseSkillStep({
       terminalTitle="Browser Use setup"
       terminalAriaLabel="Browser Use skill install terminal"
       terminalWorktreeId="settings-browser-use-skill-terminal"
+      terminalShellOverride={terminalShellOverride}
+      terminalRuntime={terminalRuntime}
       installed={skillDetected}
       loading={skillLoading}
       error={skillError}
       installDisabled={disabled}
-      leading={<StepBadge index={2} state={skillDetected ? 'done' : 'pending'} />}
-      preInstallNotice={preInstallNotice}
+      leading={<StepBadge index={1} state={skillDetected ? 'done' : 'pending'} />}
       onBeforeOpenTerminal={onBeforeOpenTerminal}
       onRecheck={onRecheck}
     />

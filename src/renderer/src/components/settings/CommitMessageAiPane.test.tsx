@@ -1,10 +1,11 @@
 import React from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { beforeEach, describe, expect, it } from 'vitest'
-import type { GlobalSettings } from '../../../../shared/types'
+import type { GlobalSettings } from '../../../../shared/global-settings-types'
 import type { SourceControlAiSettings } from '../../../../shared/source-control-ai-types'
 import {
   getCommitMessageModelDiscoveryHostKey,
+  getCommitMessageModelDiscoveryHostKeyForLocalRuntime,
   getCommitMessageModelDiscoveryHostKeyForScope
 } from '../../../../shared/commit-message-host-key'
 import { useAppStore } from '../../store'
@@ -84,6 +85,7 @@ describe('CommitMessageAiPane', () => {
     expect(markup).toContain('Pull request details')
     expect(markup).toContain('Branch name')
     expect(markup).toContain('Commit failure fixes')
+    expect(markup).toContain('Push failure fixes')
     expect(markup).toContain('Broken checks fixes')
     expect(markup).toContain('Conflict resolution')
     expect(markup).toContain('CLI arguments')
@@ -440,18 +442,19 @@ describe('CommitMessageAiPane', () => {
     expect(getCommitMessageModelDiscoveryHostKey(null)).toBe('local')
     expect(getCommitMessageModelDiscoveryHostKey('ssh-1')).toBe('ssh:ssh-1')
     expect(getCommitMessageModelDiscoveryHostKey(undefined)).toBe('unknown')
+    expect(getCommitMessageModelDiscoveryHostKeyForLocalRuntime('Ubuntu')).toBe('wsl:Ubuntu')
+    expect(getCommitMessageModelDiscoveryHostKeyForLocalRuntime(null)).toBe('local')
     expect(getCommitMessageModelDiscoveryHostKeyForScope('runtime:env-1')).toBe('runtime:env-1')
     expect(getCommitMessageModelDiscoveryHostKeyForScope('ssh-1')).toBe('ssh:ssh-1')
   })
 
   it('keeps local active worktree discovery scoped to local, not unknown', () => {
-    expect(getCommitMessageSettingsPaneDiscoveryHostKey(buildSettings(), null, true)).toBe('local')
-    expect(getCommitMessageSettingsPaneDiscoveryHostKey(buildSettings(), undefined, true)).toBe(
-      'unknown'
-    )
+    const local = { kind: 'local' } as const
+    expect(getCommitMessageSettingsPaneDiscoveryHostKey(local, null, true)).toBe('local')
+    expect(getCommitMessageSettingsPaneDiscoveryHostKey(local, undefined, true)).toBe('unknown')
     expect(
       getCommitMessageSettingsPaneDiscoveryHostKey(
-        buildSettings({ activeRuntimeEnvironmentId: 'env-1' }),
+        { kind: 'environment', environmentId: 'env-1' },
         null,
         true
       )

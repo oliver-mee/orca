@@ -44,7 +44,6 @@ export const KO_VALUE_OVERRIDES = {
   'Issue #{{value0}}': '이슈 #{{value0}}',
   'Linked issue #{{value0}}': '연결된 이슈 #{{value0}}',
   'Issue # or GitHub URL': '이슈 # 또는 GitHub URL',
-  'Add Orca attribution to commits, PRs, and issues.': '커밋, PR 및 이슈에 Orca 속성을 추가합니다.',
   'Paste an issue URL, or enter a number. Leave blank to remove the link.':
     '이슈 URL을 붙여넣거나 숫자를 입력하세요. 링크를 제거하려면 비워두세요.',
   'Connect Linear in Settings to search issues.': '이슈를 검색하려면 설정에서 Linear를 연결하세요.',
@@ -87,6 +86,10 @@ export const KO_VALUE_OVERRIDES = {
   Start: '시작',
   Work: '작업',
   Show: '표시',
+  Hide: '숨기기',
+  Import: '가져오기',
+  import: '가져오기',
+  'Import…': '가져오기…',
   Pass: '통과',
   Maintain: '유지',
   Approve: '승인',
@@ -153,8 +156,7 @@ export const KO_VALUE_OVERRIDES = {
     '저장되지 않은 Git AI Author 변경사항이 있습니다. 떠나면 폐기됩니다.',
   'Discard unsaved Git AI Author changes?':
     '저장되지 않은 Git AI Author 변경사항을 삭제하시겠습니까?',
-  'Branch naming, base refs, attribution, and Git AI Author.':
-    '브랜치 이름 지정, 기본 참조, 속성 및 Git AI Author.',
+  'Branch naming, base refs, and Git AI Author.': '브랜치 이름 지정, 기본 참조 및 Git AI Author.',
   'Used by repositories that inherit global hosted-review defaults.':
     '전역 호스팅 PR 기본값을 상속하는 저장소에서 사용됩니다.',
   'Defaults used when the hosted-review composer opens.':
@@ -171,7 +173,7 @@ export const KO_VALUE_OVERRIDES = {
     '아래 워크스페이스 오류를 확인한 후 새로고침하세요.',
   'Review inactive workspaces before deleting their local files and Orca state.':
     '로컬 파일과 Orca 상태를 삭제하기 전에 비활성 워크스페이스를 확인하세요.',
-  'Review inactive workspaces (': '비활성 워크스페이스 확인(',
+  'Clean up workspaces': '워크스페이스 정리',
   'Review the settings that will be imported from your Ghostty config.':
     'Ghostty 구성에서 가져올 설정을 확인하세요.',
   'GitHub requires review approval before this pull request can merge':
@@ -205,7 +207,7 @@ export const KO_VALUE_OVERRIDES = {
   'Install the Orca skill so agents know to use the Orca CLI.':
     '에이전트가 Orca CLI를 사용하도록 Orca 스킬을 설치하세요.',
   'Local project, Git repo, or folder with many repos':
-    '로컬 프로젝트, Git repo 또는 repos가 많은 폴더',
+    '로컬 프로젝트, Git 저장소 또는 저장소가 많은 폴더',
   'Linear, GitLab, Bitbucket, Azure DevOps, Gitea, and Jira live in Settings > Integrations.':
     'Linear, GitLab, Bitbucket, Azure DevOps, Gitea 및 Jira는 설정 > 연동에 있습니다.',
   'changed since you last approved. Re-review before it runs':
@@ -229,5 +231,67 @@ export const KO_VALUE_OVERRIDES = {
   'Review recent changes in this workspace. Focus on correctness risks, UX regressions, missing tests, and follow-up tasks. Keep the report short and actionable.':
     '이 워크스페이스의 최근 변경사항을 리뷰하세요. 정확성 위험, UX 회귀, 누락된 테스트 및 후속 작업에 중점을 둡니다. 보고서를 짧고 실행 가능하게 유지하세요.',
   'Check for stuck work, stale generated files, failing validation, and anything that needs human attention. Report only actionable issues.':
-    '작업 중단, 오래 생성된 파일, 유효성 검사 실패 및 사람의 주의가 필요한 모든 사항을 확인하세요. 실행 가능한 이슈만 보고하세요.'
+    '작업 중단, 오래 생성된 파일, 유효성 검사 실패 및 사람의 주의가 필요한 모든 사항을 확인하세요. 실행 가능한 이슈만 보고하세요.',
+  Pipeline: '파이프라인',
+  Jobs: '작업',
+  Completed: '완료됨',
+  'Posting…': '게시 중…',
+  thread: '스레드',
+  'Close issue': '이슈 닫기',
+  'Close as completed': '완료로 닫기',
+  Checks: '체크',
+  'Refresh checks': '체크 새로고침',
+  'Check rerun requested': '체크 재실행이 요청되었습니다',
+  Pull: '풀',
+  Sync: '동기화',
+  'Publish Branch': '브랜치 게시',
+  'Stage at least one file to commit': '커밋할 파일을 하나 이상 스테이지하세요',
+  'Commit staged changes': '스테이지된 변경 사항 커밋',
+  'No commits yet': '아직 커밋이 없습니다',
+  Paste: '붙여넣기',
+  'Next match': '다음 일치 항목',
+  'Previous match': '이전 일치 항목',
+  Key: '키',
+  Prompt: '프롬프트',
+  Label: '레이블',
+  Action: '작업',
+  Views: '뷰',
+  'Jira JQL, e.g. project = ABC AND statusCategory != Done':
+    'Jira JQL, 예: project = ABC AND statusCategory != Done',
+  'npm run dev': 'npm run dev',
+  '/goal': '/goal',
+  Grab: '가져오기',
+  Change: '변경',
+  Intent: '의도',
+  'Take back': '제어권 가져오기',
+  Android: 'Android',
+  Network: '네트워크',
+  'Available on': '지원 플랫폼',
+  'Git Bash': 'Git Bash',
+  Set: '설정',
+  Test: '테스트',
+  'Azure DevOps': 'Azure DevOps',
+  'Review providers': '리뷰 제공자',
+  'Task providers': '작업 제공자',
+  'Available Hosts': '사용 가능한 호스트',
+  'Refresh PR checks': 'PR 체크 새로고침',
+  'Run on': '실행 위치',
+  'Clone project': '프로젝트 클론',
+  Smart: '스마트',
+  'Workspace name': '워크스페이스 이름',
+  '• inferred pricing': '• 추정 가격',
+  'Run context': '실행 컨텍스트',
+  Dirty: '변경 있음',
+  Unread: '읽지 않음',
+  Home: '홈',
+  Local: '로컬',
+  'Reveal file': '파일 표시',
+  'new markdown': '새 Markdown',
+  'new shell': '새 shell',
+  'trash worktree': '워크트리 휴지통으로 이동',
+  AI: 'AI',
+  Server: '서버',
+  Web: '웹',
+  Code: '코드',
+  Folder: '폴더'
 }

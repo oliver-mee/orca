@@ -8,7 +8,7 @@ import { Button } from '@/components/ui/button'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { cn } from '@/lib/utils'
 import { useRepoLabelsBySlug, useRepoAssigneesBySlug } from '@/hooks/useGitHubSlugMetadata'
-import { type PickerOption } from '@/components/github/PRFilterPickers'
+import type { PickerOption } from '@/components/github/PRFilterPickers'
 import {
   SectionDetail,
   SectionMenu,
@@ -17,9 +17,9 @@ import {
 } from '@/components/github/PRFilterSections'
 import type {
   GitHubAssignableUser,
-  GitHubOwnerRepo,
-  GlobalSettings
-} from '../../../../shared/types'
+  GitHubOwnerRepo
+} from '../../../../shared/github/pull-request-types'
+import type { RuntimeClientTarget } from '../../../../shared/runtime-client-target'
 import type { ParsedTaskQuery } from '../../../../shared/task-query'
 import { translate } from '@/i18n/i18n'
 
@@ -31,7 +31,8 @@ type Props = {
   // Cross-repo filters can't enumerate every repo's labels in one popover —
   // GitHub's own PR list scopes the dropdown to a single repo too.
   primarySlug: GitHubOwnerRepo | null
-  settings?: Pick<GlobalSettings, 'activeRuntimeEnvironmentId'> | null
+  /** Host that owns the repo the primary slug came from. */
+  ownerTarget?: RuntimeClientTarget | null
   onChange: (change: PRFilterChange) => void
 }
 
@@ -75,7 +76,7 @@ export default function PRFilterDropdowns({
   kind,
   authorLogins,
   primarySlug,
-  settings,
+  ownerTarget,
   onChange
 }: Props): React.JSX.Element {
   const [openSection, setOpenSection] = useState<SectionKey | null>(null)
@@ -86,13 +87,15 @@ export default function PRFilterDropdowns({
   const labelsState = useRepoLabelsBySlug(
     popoverOpen ? owner : null,
     popoverOpen ? repo : null,
-    settings
+    ownerTarget,
+    primarySlug?.host
   )
   const assigneesState = useRepoAssigneesBySlug(
     popoverOpen ? owner : null,
     popoverOpen ? repo : null,
     undefined,
-    settings
+    ownerTarget,
+    primarySlug?.host
   )
 
   // Why: surface @me as a first-class option even though it's not a real
@@ -175,8 +178,9 @@ export default function PRFilterDropdowns({
             variant="outline"
             size="sm"
             className={cn(
-              'h-7 gap-1.5 rounded-md border-border/50 px-2 text-xs font-normal',
-              'bg-transparent hover:bg-muted/50',
+              // Why: solid fill + full foreground text so the control stays
+              // readable on both page canvas and the muted toolbar band.
+              'h-8 gap-1.5 rounded-md border-border/60 bg-background px-2.5 text-xs font-medium text-foreground shadow-xs hover:bg-muted/60',
               activeCount > 0 && 'border-border'
             )}
           >

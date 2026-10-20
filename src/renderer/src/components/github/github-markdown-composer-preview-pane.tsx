@@ -1,15 +1,6 @@
 import CommentMarkdown from '@/components/sidebar/CommentMarkdown'
-import type { GitHubOwnerRepo } from '../../../../shared/types'
+import type { GitHubOwnerRepo } from '../../../../shared/github/pull-request-types'
 import { translate } from '@/i18n/i18n'
-
-export function isHttpImageUrl(value: string): boolean {
-  try {
-    const parsed = new URL(value)
-    return parsed.protocol === 'https:' || parsed.protocol === 'http:'
-  } catch {
-    return false
-  }
-}
 
 export function GitHubMarkdownComposerPreviewPane({
   value,

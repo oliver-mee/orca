@@ -1,5 +1,9 @@
 import { afterEach, describe, expect, it } from 'vitest'
 import {
+  CLIPBOARD_TEXT_WRITE_MAX_BYTES,
+  CLIPBOARD_TEXT_WRITE_TOO_LARGE_ERROR
+} from '../../shared/clipboard-text'
+import {
   createDesktopScriptProviderClient,
   expectDesktopProviderSubprocessStartCount,
   mockBridgeResponse,
@@ -158,6 +162,12 @@ describe('DesktopScriptProviderClient action errors', () => {
       message: expect.stringContaining('Unsupported direction')
     })
     await expect(
+      client.action('click', { app: 'Text Editor', elementIndex: 0, mouseButton: 'wheel' })
+    ).rejects.toMatchObject({
+      code: 'invalid_argument',
+      message: expect.stringContaining('Unsupported mouseButton')
+    })
+    await expect(
       client.action('drag', { app: 'Text Editor', fromX: 1, fromY: 2 })
     ).rejects.toMatchObject({
       code: 'invalid_argument',
@@ -175,6 +185,15 @@ describe('DesktopScriptProviderClient action errors', () => {
         message: expect.stringContaining('Missing text')
       }
     )
+    await expect(
+      client.action('pasteText', {
+        app: 'Text Editor',
+        text: ['native-provider-secret', 'x'.repeat(CLIPBOARD_TEXT_WRITE_MAX_BYTES + 1)].join('')
+      })
+    ).rejects.toMatchObject({
+      code: 'invalid_argument',
+      message: CLIPBOARD_TEXT_WRITE_TOO_LARGE_ERROR
+    })
     await expect(
       client.action('pressKey', { app: 'Text Editor', key: 'CmdOrCtrl+V' })
     ).rejects.toMatchObject({

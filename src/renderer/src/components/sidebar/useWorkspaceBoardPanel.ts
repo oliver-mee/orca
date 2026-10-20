@@ -1,5 +1,20 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { isEditableTarget } from '@/lib/editable-target'
 import { useAppStore } from '@/store'
+
+const WORKSPACE_BOARD_SHEET_SELECTOR = '[data-workspace-board-sheet]'
+
+// Why: the board's Escape listener is capture-phase on document, so it runs
+// before React's handlers and a text field inside the board cannot stop it.
+// Board fields own Escape and close the board themselves when they have
+// nothing left to cancel.
+function isWorkspaceBoardEditableTarget(target: EventTarget | null): boolean {
+  return (
+    isEditableTarget(target) &&
+    target instanceof HTMLElement &&
+    target.closest(WORKSPACE_BOARD_SHEET_SELECTOR) !== null
+  )
+}
 
 const WORKSPACE_BOARD_ESCAPE_BLOCKING_OVERLAY_SELECTOR = [
   '[data-slot="dropdown-menu-content"][data-state="open"]',
@@ -10,6 +25,8 @@ const WORKSPACE_BOARD_ESCAPE_BLOCKING_OVERLAY_SELECTOR = [
   '[role="menu"][data-state="open"]',
   '[role="listbox"][data-state="open"]'
 ].join(', ')
+
+export const TOGGLE_WORKSPACE_BOARD_EVENT = 'orca:toggle-workspace-board'
 
 export type WorkspaceBoardPanelState = {
   workspaceBoardOpen: boolean
@@ -122,6 +139,9 @@ export function useWorkspaceBoardPanel(): WorkspaceBoardPanelState {
       if (workspaceBoardMenuOpen) {
         return
       }
+      if (isWorkspaceBoardEditableTarget(event.target)) {
+        return
+      }
       // Why: Escape should dismiss interactive nested overlays before this
       // companion panel, but non-interactive tooltips should not trap it.
       if (document.querySelector(WORKSPACE_BOARD_ESCAPE_BLOCKING_OVERLAY_SELECTOR)) {
@@ -136,6 +156,11 @@ export function useWorkspaceBoardPanel(): WorkspaceBoardPanelState {
     document.addEventListener('keydown', handleKeyDown, true)
     return () => document.removeEventListener('keydown', handleKeyDown, true)
   }, [closeWorkspaceBoard, workspaceBoardMenuOpen, workspaceBoardOpen])
+
+  useEffect(() => {
+    window.addEventListener(TOGGLE_WORKSPACE_BOARD_EVENT, toggleWorkspaceBoard)
+    return () => window.removeEventListener(TOGGLE_WORKSPACE_BOARD_EVENT, toggleWorkspaceBoard)
+  }, [toggleWorkspaceBoard])
 
   return {
     workspaceBoardOpen,

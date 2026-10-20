@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join, resolve } from 'node:path'
+import { dirname, join, resolve } from 'node:path'
 import { spawn, type ChildProcess } from 'node:child_process'
 import { afterEach, describe, expect, it } from 'vitest'
 
@@ -96,7 +96,9 @@ function stashWebBuild(): () => void {
     }
   }
 
-  const tempDir = mkdtempSync(join(tmpdir(), 'orca-dev-web-stash-'))
+  // Why: Windows temp can be on a different drive from the workspace, and
+  // renameSync cannot move directories across devices.
+  const tempDir = mkdtempSync(join(dirname(outWebPath), '.orca-dev-web-stash-'))
   const stashedPath = join(tempDir, 'web')
   renameSync(outWebPath, stashedPath)
   return () => {
@@ -154,6 +156,7 @@ describe('run-electron-vite-dev web client prepare', () => {
           ORCA_ELECTRON_VITE_CLI: fakeCliPath,
           ORCA_VITE_CLI: fakeVitePath,
           ORCA_SKIP_DEV_CLI_PREPARE: '1',
+          ORCA_SKIP_DEV_STORAGE_RECLAIM: '1',
           ORCA_SKIP_DEV_ELECTRON_APP_PREPARE: '1',
           ORCA_DEV_WRAPPER_TEST_PID_FILE: pidFile,
           ORCA_DEV_WRAPPER_TEST_ENV_FILE: envFile,
@@ -205,6 +208,7 @@ describe('run-electron-vite-dev web client prepare', () => {
           ORCA_ELECTRON_VITE_CLI: fakeCliPath,
           ORCA_VITE_CLI: fakeVitePath,
           ORCA_SKIP_DEV_CLI_PREPARE: '1',
+          ORCA_SKIP_DEV_STORAGE_RECLAIM: '1',
           ORCA_SKIP_DEV_ELECTRON_APP_PREPARE: '1',
           ORCA_DEV_WEB_PREPARE: '1',
           ORCA_DEV_WRAPPER_TEST_PID_FILE: pidFile,

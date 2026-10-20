@@ -1,115 +1,165 @@
 import type { IBufferLine, IBufferRange, IDisposable, Terminal } from '@xterm/xterm'
-import { openHttpLink } from '@/lib/http-link-routing'
-import { buildCandidateLogicalLinesForBufferPosition } from './terminal-file-link-hit-testing'
-import { rangeForParsedFileLink } from './wrapped-terminal-link-ranges'
+import type { HttpLinkSourceOwner } from '@/lib/http-link-routing'
+import { buildEdgeWrappedHttpLogicalLineCandidates } from './edge-wrapped-terminal-http-links'
+import { buildHardWrappedHttpLogicalLineCandidates } from './hard-wrapped-terminal-http-links'
+import { dedupeLogicalLines } from './terminal-file-link-hit-testing'
+import { isTerminalHttpLinkActivation } from './terminal-http-link-activation'
+import {
+  installTerminalLinkPtyMouseSuppression,
+  type TerminalLinkPtyMouseSuppression
+} from './terminal-link-pty-mouse-suppression'
+import { getTerminalBufferPositionForMouseEvent } from './terminal-mouse-buffer-position'
+import { extractTerminalHttpLinks } from './terminal-http-url-extraction'
+import { buildWrappedLogicalLine, rangeForParsedFileLink } from './wrapped-terminal-link-ranges'
+import { isTerminalLinkifierHoverActive } from '@/lib/pane-manager/terminal-linkifier-hover-reset'
+import {
+  buildHttpLinkActions,
+  openRoutedHttpLink,
+  type HttpLinkActionDestinations,
+  type HttpLinkDestination,
+  type HttpLinkRoutingPreferenceRequester
+} from '@/lib/http-link-destinations'
+import { isTerminalOwnedLinkGesture } from './terminal-link-activation'
+import {
+  requestTerminalLinkAction,
+  type TerminalLinkActionContext
+} from './terminal-link-action-request'
+
+export { extractTerminalHttpLinks } from './terminal-http-url-extraction'
+export { TERMINAL_HTTP_URL_MAX_LENGTH } from './terminal-http-link-limits'
 
 type UrlLinkHitTestDeps = {
   worktreeId: string
-  forceSystemBrowser?: boolean
+  sourceOwner?: HttpLinkSourceOwner
+  modifierHeld?: boolean
   requestOpenLinksInAppPreference?: TerminalLinkRoutingPreferenceRequester
+  linkActionContext?: TerminalLinkActionContext | null
+  actionDestinations?: TerminalHttpLinkActionDestinations
+  actionDestination?: string
+  forceDestination?: TerminalHttpLinkDestination
 }
 
 type UrlLinkClickFallbackDeps = {
   worktreeId: string
+  /** Resolved per click: the pane's PTY (and its runtime binding) may not exist at install time. */
+  getSourceOwner?: () => HttpLinkSourceOwner
   requestOpenLinksInAppPreference?: TerminalLinkRoutingPreferenceRequester
+  getLinkActionContext?: () => TerminalLinkActionContext | null
+  getActionDestinations?: () => TerminalHttpLinkActionDestinations
 }
 
-export type TerminalLinkRoutingPreferenceRequester = (
-  url: string
-) => boolean | Promise<boolean> | null | undefined
-
-type ParsedTerminalHttpLink = {
-  url: string
-  startIndex: number
-  endIndex: number
+export type HttpLinkClickFallbackBinding = IDisposable & {
+  ptyMouseSuppression: TerminalLinkPtyMouseSuppression
 }
 
-// Mirrors @xterm/addon-web-links' strict URL matcher so fallback clicks use
-// the same visible URL span as xterm's hover-time WebLinksAddon provider.
-const TERMINAL_HTTP_URL_REGEX = /\bhttps?:\/\/[^\s"'!*(){}|\\^<>`]*[^\s"':,.!?{}|\\^~[\]`()<>]/gi
+export type TerminalHttpLinkDestination = HttpLinkDestination
 
-function extractTerminalHttpLinks(lineText: string): ParsedTerminalHttpLink[] {
-  const links: ParsedTerminalHttpLink[] = []
-  for (const match of lineText.matchAll(TERMINAL_HTTP_URL_REGEX)) {
-    const url = match[0]
-    const index = match.index ?? 0
-    let parsed: URL
-    try {
-      parsed = new URL(url)
-    } catch {
-      continue
-    }
-    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
-      continue
-    }
-    links.push({ url: parsed.toString(), startIndex: index, endIndex: index + url.length })
+export type TerminalHttpLinkActionDestinations = HttpLinkActionDestinations
+
+export type TerminalLinkRoutingPreferenceRequester = HttpLinkRoutingPreferenceRequester
+
+function isDesktopHttpLinkFallbackActivation(event: MouseEvent): boolean {
+  if (event.defaultPrevented || (event.button !== 0 && event.button !== 1)) {
+    return false
   }
-  return links
+  // Why: Shift-only, Alt, and non-primary clicks remain available to the terminal or child TUI.
+  return isTerminalOwnedLinkGesture(event)
 }
 
-function isTerminalLinkActivation(
-  event: Pick<MouseEvent, 'metaKey' | 'ctrlKey'> | undefined
+export function handleTerminalHttpLink(
+  url: string,
+  event: MouseEvent | undefined,
+  deps: UrlLinkHitTestDeps
 ): boolean {
-  const isMac = navigator.userAgent.includes('Mac')
-  return isMac ? Boolean(event?.metaKey) : Boolean(event?.ctrlKey)
+  if (isTerminalHttpLinkActivation(event)) {
+    const forceDestination = event?.shiftKey
+      ? (deps.actionDestinations?.alternate ?? deps.actionDestinations?.primary)
+      : deps.actionDestinations?.primary
+    openRoutedHttpLink(url, {
+      ...deps,
+      modifierHeld: forceDestination ? false : Boolean(event?.shiftKey),
+      forceDestination
+    })
+    return true
+  }
+
+  return requestTerminalLinkAction(event, deps.linkActionContext, {
+    destination: deps.actionDestination ?? url,
+    kind: 'url',
+    ...buildHttpLinkActions(deps.actionDestinations, (destination) =>
+      openRoutedHttpLink(url, { ...deps, modifierHeld: false, forceDestination: destination })
+    )
+  })
 }
 
-function getTerminalScreenElement(terminal: Terminal): HTMLElement | null {
-  return terminal.element?.querySelector('.xterm-screen') ?? null
+export function openHttpLinkAtTerminalMouseEvent(
+  terminal: Terminal,
+  event: MouseEvent,
+  deps: UrlLinkHitTestDeps
+): boolean {
+  if (event.button !== 0 || !isTerminalHttpLinkActivation(event)) {
+    return false
+  }
+  const position = getTerminalBufferPositionForMouseEvent(terminal, event)
+  if (!position) {
+    return false
+  }
+  return openHttpLinkAtBufferPosition(terminal.buffer.active, position, terminal.cols, deps)
 }
 
-function getBufferPositionForTerminalMouseEvent(
+export function findHttpLinkAtTerminalMouseEvent(
   terminal: Terminal,
   event: MouseEvent
-): { x: number; y: number } | null {
-  const screenElement = getTerminalScreenElement(terminal)
-  if (!screenElement || terminal.cols <= 0 || terminal.rows <= 0) {
+): string | null {
+  if ((event.button !== 0 && event.button !== 1) || !isTerminalOwnedLinkGesture(event)) {
     return null
   }
-
-  const rect = screenElement.getBoundingClientRect()
-  const relativeX = event.clientX - rect.left
-  const relativeY = event.clientY - rect.top
-  if (relativeX < 0 || relativeY < 0 || relativeX >= rect.width || relativeY >= rect.height) {
-    return null
-  }
-
-  const cellWidth = rect.width / terminal.cols
-  const cellHeight = rect.height / terminal.rows
-  if (cellWidth <= 0 || cellHeight <= 0) {
-    return null
-  }
-
-  return {
-    x: Math.floor(relativeX / cellWidth) + 1,
-    y: Math.floor(relativeY / cellHeight) + terminal.buffer.active.viewportY + 1
-  }
+  const position = getTerminalBufferPositionForMouseEvent(terminal, event)
+  return position
+    ? findHttpLinkAtBufferPosition(terminal.buffer.active, position, terminal.cols)
+    : null
 }
 
 export function installHttpLinkClickFallback(
   terminal: Terminal,
   deps: UrlLinkClickFallbackDeps
-): IDisposable {
+): HttpLinkClickFallbackBinding {
+  const isLinkMouseEvent = (event: MouseEvent): boolean => {
+    if (isTerminalLinkifierHoverActive(terminal)) {
+      return true
+    }
+    const position = getTerminalBufferPositionForMouseEvent(terminal, event)
+    return Boolean(
+      position && findHttpLinkAtBufferPosition(terminal.buffer.active, position, terminal.cols)
+    )
+  }
+  const ptyMouseSuppression = installTerminalLinkPtyMouseSuppression(
+    terminal,
+    isLinkMouseEvent,
+    (event) => {
+      const context = deps.getLinkActionContext?.()
+      return Boolean(context?.pointerGesture.canRequestAction(event) && isLinkMouseEvent(event))
+    },
+    (event) => Boolean(deps.getLinkActionContext?.()?.pointerGesture.canRequestAction(event))
+  )
   const handleMouseUp = (event: MouseEvent): void => {
-    if (event.defaultPrevented || event.button !== 0 || !isTerminalLinkActivation(event)) {
+    if (!isDesktopHttpLinkFallbackActivation(event)) {
       return
     }
 
-    const position = getBufferPositionForTerminalMouseEvent(terminal, event)
-    if (!position) {
-      return
-    }
-
-    // Why: xterm's WebLinksAddon only activates after hover state exists. This
-    // direct mouseup fallback preserves Cmd/Ctrl-click when the hover link was
-    // never established, while defaultPrevented avoids double-opening links
-    // that xterm already handled.
-    const opened = openHttpLinkAtBufferPosition(terminal.buffer.active, position, terminal.cols, {
-      worktreeId: deps.worktreeId,
-      forceSystemBrowser: event.shiftKey,
-      requestOpenLinksInAppPreference: deps.requestOpenLinksInAppPreference
-    })
-    if (opened) {
+    // Why: xterm's WebLinksAddon misses first clicks before hover state exists.
+    const url = findHttpLinkAtTerminalMouseEvent(terminal, event)
+    const handled = Boolean(
+      url &&
+      handleTerminalHttpLink(url, event, {
+        worktreeId: deps.worktreeId,
+        sourceOwner: deps.getSourceOwner?.() ?? { kind: 'local' },
+        requestOpenLinksInAppPreference: deps.requestOpenLinksInAppPreference,
+        linkActionContext: deps.getLinkActionContext?.(),
+        actionDestinations: deps.getActionDestinations?.()
+      })
+    )
+    if (handled) {
       event.preventDefault()
       terminal.clearSelection()
     }
@@ -118,7 +168,9 @@ export function installHttpLinkClickFallback(
   const terminalElement = terminal.element
   terminalElement?.addEventListener('mouseup', handleMouseUp)
   return {
+    ptyMouseSuppression,
     dispose: () => {
+      ptyMouseSuppression.dispose()
       terminalElement?.removeEventListener('mouseup', handleMouseUp)
     }
   }
@@ -130,9 +182,32 @@ export function openHttpLinkAtBufferPosition(
   terminalColumns: number,
   deps: UrlLinkHitTestDeps
 ): boolean {
-  const logicalLines = buildCandidateLogicalLinesForBufferPosition(buffer, position.y)
-  if (logicalLines.length === 0) {
+  const url = findHttpLinkAtBufferPosition(buffer, position, terminalColumns)
+  if (!url) {
     return false
+  }
+  openRoutedHttpLink(url, deps)
+  return true
+}
+
+function findHttpLinkAtBufferPosition(
+  buffer: { getLine(y: number): IBufferLine | undefined },
+  position: { x: number; y: number },
+  terminalColumns: number
+): string | null {
+  const nativeWrappedLogicalLine = buildWrappedLogicalLine(buffer, position.y)
+  const logicalLines = dedupeLogicalLines([
+    ...(nativeWrappedLogicalLine && nativeWrappedLogicalLine.rows.length > 1
+      ? [nativeWrappedLogicalLine]
+      : []),
+    ...buildHardWrappedHttpLogicalLineCandidates(buffer, position.y),
+    ...buildEdgeWrappedHttpLogicalLineCandidates(buffer, position.y),
+    ...(nativeWrappedLogicalLine && nativeWrappedLogicalLine.rows.length === 1
+      ? [nativeWrappedLogicalLine]
+      : [])
+  ])
+  if (logicalLines.length === 0) {
+    return null
   }
 
   for (const logicalLine of logicalLines) {
@@ -141,39 +216,11 @@ export function openHttpLinkAtBufferPosition(
       if (!range || !rangeContainsBufferPosition(range, position, terminalColumns)) {
         continue
       }
-      openTerminalHttpLink(parsed.url, deps)
-      return true
+      return parsed.url
     }
   }
 
-  return false
-}
-
-export function openTerminalHttpLink(url: string, deps: UrlLinkHitTestDeps): void {
-  if (deps.forceSystemBrowser) {
-    openHttpLink(url, { worktreeId: deps.worktreeId, forceSystemBrowser: true })
-    return
-  }
-
-  const preferenceDecision = deps.requestOpenLinksInAppPreference?.(url)
-  if (preferenceDecision === null || preferenceDecision === undefined) {
-    openHttpLink(url, { worktreeId: deps.worktreeId })
-    return
-  }
-
-  // Why: the first terminal link click may need an async preference dialog.
-  // Suppress the browser's default link handling first, then route after the
-  // persisted choice is available.
-  void Promise.resolve(preferenceDecision)
-    .then((openInOrca) => {
-      openHttpLink(url, {
-        worktreeId: deps.worktreeId,
-        forceSystemBrowser: !openInOrca
-      })
-    })
-    .catch(() => {
-      openHttpLink(url, { worktreeId: deps.worktreeId, forceSystemBrowser: true })
-    })
+  return null
 }
 
 function rangeContainsBufferPosition(

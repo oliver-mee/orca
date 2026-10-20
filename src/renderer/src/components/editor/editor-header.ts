@@ -1,6 +1,8 @@
 import type { OpenFile } from '@/store/slices/editor'
-import type { GitBranchChangeEntry, GitStatusEntry } from '../../../../shared/types'
+import type { GitBranchChangeEntry } from '../../../../shared/git-diff-compare-types'
+import type { GitStatusEntry } from '../../../../shared/git-status-types'
 import { getEditorDisplayLabel } from './editor-labels'
+import { isVirtualEditorFile } from '@/store/slices/editor/tabs/editor-tab-content-type'
 
 export type EditorHeaderCopyState = {
   copyText: string | null
@@ -11,6 +13,11 @@ export type EditorHeaderCopyState = {
 
 export type EditorHeaderOpenFileState = {
   canOpen: boolean
+}
+
+/** Whether the panel shows its own path header; virtual tabs name the document themselves. */
+export function shouldShowEditorPanelHeader(file: OpenFile, isCombinedDiff: boolean): boolean {
+  return !isCombinedDiff && !isVirtualEditorFile(file)
 }
 
 export function getEditorHeaderCopyState(file: OpenFile): EditorHeaderCopyState {
@@ -35,7 +42,8 @@ export function getEditorHeaderCopyState(file: OpenFile): EditorHeaderCopyState 
 
   const isCombinedDiff =
     file.mode === 'diff' &&
-    (file.diffSource === 'combined-uncommitted' ||
+    (file.diffSource === 'combined-all' ||
+      file.diffSource === 'combined-uncommitted' ||
       file.diffSource === 'combined-branch' ||
       file.diffSource === 'combined-commit')
 
@@ -66,6 +74,7 @@ export function getEditorHeaderOpenFileState(
   const isSingleDiff =
     file.mode === 'diff' &&
     file.diffSource !== undefined &&
+    file.diffSource !== 'combined-all' &&
     file.diffSource !== 'combined-uncommitted' &&
     file.diffSource !== 'combined-branch' &&
     file.diffSource !== 'combined-commit'

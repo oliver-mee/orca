@@ -26,26 +26,33 @@ const items: ActivityBarItem[] = [
     shortcut: '',
     gitOnly: true
   },
-  { id: 'ports', icon: Files, title: 'Ports', shortcut: '', sshOnly: true }
+  { id: 'ports', icon: Files, title: 'Ports', shortcut: '', sshOnly: true },
+  // Plugin panels carry no visibility flags, so they show in every context.
+  {
+    id: 'plugin:orca-samples.my-plugin/dashboard',
+    icon: Files,
+    title: 'Dashboard',
+    shortcut: ''
+  }
 ]
 
 describe('getVisibleRightSidebarActivityItems', () => {
-  it('shows ports only for SSH repos', () => {
+  it('shows ports only for workspaces on an SSH host', () => {
     expect(
       getVisibleRightSidebarActivityItems(items, {
         isFolder: false,
         isFolderWorkspace: false,
-        isSshRepo: false
+        hasSshHost: false
       }).map((item) => item.id)
-    ).toEqual(['explorer', 'source-control'])
+    ).toEqual(['explorer', 'source-control', 'plugin:orca-samples.my-plugin/dashboard'])
 
     expect(
       getVisibleRightSidebarActivityItems(items, {
         isFolder: false,
         isFolderWorkspace: false,
-        isSshRepo: true
+        hasSshHost: true
       }).map((item) => item.id)
-    ).toEqual(['explorer', 'source-control', 'ports'])
+    ).toEqual(['explorer', 'source-control', 'ports', 'plugin:orca-samples.my-plugin/dashboard'])
   })
 
   it('shows Workspaces only for folder workspaces and hides git tabs for all folder scopes', () => {
@@ -53,16 +60,22 @@ describe('getVisibleRightSidebarActivityItems', () => {
       getVisibleRightSidebarActivityItems(items, {
         isFolder: true,
         isFolderWorkspace: true,
-        isSshRepo: true
+        hasSshHost: true
       }).map((item) => item.id)
-    ).toEqual(['explorer', 'workspaces', 'pr-checks', 'ports'])
+    ).toEqual([
+      'explorer',
+      'workspaces',
+      'pr-checks',
+      'ports',
+      'plugin:orca-samples.my-plugin/dashboard'
+    ])
 
     expect(
       getVisibleRightSidebarActivityItems(items, {
         isFolder: true,
         isFolderWorkspace: false,
-        isSshRepo: true
+        hasSshHost: true
       }).map((item) => item.id)
-    ).toEqual(['explorer', 'ports'])
+    ).toEqual(['explorer', 'ports', 'plugin:orca-samples.my-plugin/dashboard'])
   })
 })

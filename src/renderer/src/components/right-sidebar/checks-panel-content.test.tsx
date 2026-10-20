@@ -2,17 +2,19 @@ import React from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it } from 'vitest'
 import { TooltipProvider } from '@/components/ui/tooltip'
-import type { PRCheckDetail, PRComment, PRInfo } from '../../../../shared/types'
+import type { PRCheckDetail } from '../../../../shared/github/check-types'
+import type { PRComment } from '../../../../shared/github/comment-types'
+import type { PRInfo } from '../../../../shared/github/pull-request-types'
 import {
-  CheckJobLogTail,
-  ChecksList,
-  ConflictTriageStrip,
-  getFailedChecksForDetails,
-  MergeConflictNotice,
-  isMutablePRConversationComment,
-  PRCommentsList,
-  PRTriageStrip
-} from './checks-panel-content'
+  buildMergeabilityRecalculationCommands,
+  MergeConflictNotice
+} from './checks-panel/conflict-summary'
+import { ConflictTriageStrip, PRTriageStrip } from './checks-panel/triage-strip'
+import { getFailedChecksForDetails } from './checks-panel/check-details-model'
+import { ChecksList } from './checks-panel/checks-list'
+import { isMutablePRConversationComment } from './checks-panel/comment-controls'
+import { PRCommentsList } from './checks-panel/comments-list'
+import { CheckJobLogTail } from './check-job-log-tail'
 
 function renderWithTooltips(element: React.ReactElement): string {
   return renderToStaticMarkup(React.createElement(TooltipProvider, null, element))
@@ -41,6 +43,16 @@ function renderNotice(pr: PRInfo, isRefreshingConflictDetails = false): string {
 }
 
 describe('MergeConflictNotice', () => {
+  it('builds safe mergeability recalculation commands', () => {
+    expect(buildMergeabilityRecalculationCommands()).toBe(
+      [
+        'git fetch origin',
+        'git commit --allow-empty --only -m "chore: refresh PR mergeability"',
+        'git push'
+      ].join('\n')
+    )
+  })
+
   it('does not claim conflict details are refreshing after the refresh has settled', () => {
     const markup = renderNotice(makePR())
 
@@ -52,6 +64,29 @@ describe('MergeConflictNotice', () => {
     const markup = renderNotice(makePR(), true)
 
     expect(markup).toContain('Refreshing conflict details')
+  })
+
+  it('explains when the hosting provider reports conflicts but local git simulates a clean merge', () => {
+    const markup = renderNotice(
+      makePR({
+        conflictSummary: {
+          baseRef: 'main',
+          baseCommit: 'abc1234',
+          commitsBehind: 1,
+          files: [],
+          localMergeState: 'clean'
+        }
+      })
+    )
+
+    expect(markup).toContain('local Git did not reproduce them')
+    expect(markup).toContain('Run from this worktree')
+    expect(markup).toContain('hosting provider reports conflicts')
+    expect(markup).toContain('git fetch origin')
+    expect(markup).toContain('git commit --allow-empty --only')
+    expect(markup).toContain('git push')
+    expect(markup).toContain('Copy commands')
+    expect(markup).not.toContain('Conflict file details are unavailable')
   })
 
   it('hides when the conflicting file list is available', () => {
@@ -158,6 +193,95 @@ describe('ChecksList', () => {
     expect(markup).not.toContain('opacity-0')
     expect(markup).not.toContain('Open details')
   })
+
+  // Why: the pill above this list already calls skipped checks passing; a "2 passing" header on the
+  // same 2-success/3-skipped PR contradicts its own "5/5 passed" pill.
+  it('counts skipped checks in the passing header, matching the checks pill', () => {
+    const markup = renderToStaticMarkup(
+      React.createElement(
+        TooltipProvider,
+        null,
+        React.createElement(ChecksList, {
+          checks: [
+            { name: 'build', status: 'completed', conclusion: 'success', url: null },
+            { name: 'test', status: 'completed', conclusion: 'success', url: null },
+            { name: 'deploy', status: 'completed', conclusion: 'skipped', url: null },
+            { name: 'docs', status: 'completed', conclusion: 'skipped', url: null },
+            { name: 'e2e', status: 'completed', conclusion: 'skipped', url: null }
+          ],
+          checksLoading: false,
+          checkDetailsContextKey: 'repo:43'
+        })
+      )
+    )
+
+    expect(markup).toContain('5 passing')
+    expect(markup).not.toContain('2 passing')
+  })
+
+  // Why: a completed check with no conclusion will never resolve, so calling it pending kept an
+  // amber spinner next to a grey "Unresolved checks" pill reading the same list.
+  it('reports a completed check with no conclusion as unresolved, not pending', () => {
+    const markup = renderToStaticMarkup(
+      React.createElement(
+        TooltipProvider,
+        null,
+        React.createElement(ChecksList, {
+          checks: [{ name: 'legacy', status: 'completed', conclusion: null, url: null }],
+          checksLoading: false,
+          checkDetailsContextKey: 'repo:44'
+        })
+      )
+    )
+
+    expect(markup).toContain('1 unresolved')
+    expect(markup).not.toContain('1 pending')
+  })
+})
+
+describe('PRTriageStrip check counts', () => {
+  function renderStrip(checks: PRCheckDetail[]): string {
+    return renderToStaticMarkup(
+      React.createElement(PRTriageStrip, {
+        pr: makePR({ mergeable: 'MERGEABLE' }),
+        checks,
+        isResolvingConflictsWithAI: false,
+        onResolveConflictsWithAI: () => {},
+        isFixingChecksWithAI: false,
+        onFixChecksWithAI: () => {}
+      })
+    )
+  }
+
+  // Why: the strip and the checks pill read the same list, so a check that completed without a
+  // verdict must not spin here as pending while the pill calls it unresolved.
+  it('shows a completed check with no conclusion as unresolved instead of pending', () => {
+    const markup = renderStrip([
+      { name: 'legacy', status: 'completed', conclusion: null, url: null }
+    ])
+
+    expect(markup).toContain('1 check unresolved')
+    expect(markup).not.toContain('1 check pending')
+    expect(markup).not.toContain('No blocking PR action')
+  })
+
+  it('still reports a running check as pending', () => {
+    const markup = renderStrip([{ name: 'ci', status: 'in_progress', conclusion: null, url: null }])
+
+    expect(markup).toContain('1 check pending')
+  })
+
+  // Why: one unresolved check must not demote a PR that has a passing one — that is the same
+  // rollup rule the pill uses, so both keep saying the PR is green.
+  it('keeps a passing check green even when another check is unresolved', () => {
+    const markup = renderStrip([
+      { name: 'build', status: 'completed', conclusion: 'success', url: null },
+      { name: 'legacy', status: 'completed', conclusion: 'neutral', url: null }
+    ])
+
+    expect(markup).toContain('No blocking PR action')
+    expect(markup).not.toContain('unresolved')
+  })
 })
 
 describe('isMutablePRConversationComment', () => {
@@ -221,9 +345,39 @@ describe('PRCommentsList', () => {
     expect(markup.indexOf('aria-label="Add comment"')).toBeLessThan(
       markup.indexOf('Existing review context')
     )
+    expect(markup.indexOf('aria-label="Comment display options"')).toBeLessThan(
+      markup.indexOf('aria-label="Add comment"')
+    )
     expect(markup).toContain('lucide-plus')
     expect(markup).not.toContain('Add a comment...')
     expect(markup).not.toContain('Add a PR comment')
+  })
+
+  it('shows resolve on open review threads', () => {
+    const comments: PRComment[] = [
+      {
+        id: 2,
+        author: 'alice',
+        authorAvatarUrl: '',
+        body: 'Please address this before merge.',
+        createdAt: '2026-05-14T00:00:00Z',
+        url: 'https://github.com/acme/widgets/pull/42#discussion_r2',
+        threadId: 'thread-open',
+        path: 'src/a.ts',
+        isResolved: false
+      }
+    ]
+
+    const markup = renderWithTooltips(
+      React.createElement(PRCommentsList, {
+        comments,
+        commentsLoading: false,
+        onResolve: () => true
+      })
+    )
+
+    expect(markup).toContain('Resolve')
+    expect(markup).not.toContain('Unresolve')
   })
 
   it('renders a more-actions menu on conversation comments', () => {
@@ -288,15 +442,68 @@ describe('getFailedChecksForDetails', () => {
 })
 
 describe('CheckJobLogTail', () => {
+  it.each([
+    ['completed', 'failure', 'No log excerpt is available.'],
+    ['in_progress', null, 'Log output is not available yet.'],
+    ['completed', 'success', null],
+    ['completed', 'skipped', null]
+  ])(
+    'shows truthful legacy absence for %s / %s without empty Copy',
+    (status, conclusion, expected) => {
+      const markup = renderWithTooltips(
+        React.createElement(CheckJobLogTail, {
+          job: { status, conclusion, logTail: null },
+          surface: 'sidebar'
+        })
+      )
+      if (expected) {
+        expect(markup).toContain(expected)
+      } else {
+        expect(markup).toBe('')
+      }
+      expect(markup).not.toContain('Copy log excerpt')
+      expect(markup).not.toContain('expired')
+    }
+  )
   it('renders a labeled monospace log tail with copy affordance', () => {
     const markup = renderToStaticMarkup(
-      React.createElement(CheckJobLogTail, {
-        logTail: 'Error: expected true to be false'
-      })
+      React.createElement(
+        TooltipProvider,
+        null,
+        React.createElement(CheckJobLogTail, {
+          surface: 'sidebar',
+          job: {
+            logTail: 'Error: expected true to be false',
+            status: 'completed',
+            conclusion: 'failure'
+          }
+        })
+      )
     )
 
-    expect(markup).toContain('Log tail (last 200 lines)')
+    expect(markup).toContain('Log excerpt')
     expect(markup).toContain('Error: expected true to be false')
-    expect(markup).toContain('Copy log tail')
+    expect(markup).toContain('Copy log excerpt')
+  })
+
+  it('uses a taller viewport when expanded for failed-job details', () => {
+    const markup = renderToStaticMarkup(
+      React.createElement(
+        TooltipProvider,
+        null,
+        React.createElement(CheckJobLogTail, {
+          surface: 'details',
+          job: {
+            logTail: 'Error: expected true to be false',
+            status: 'completed',
+            conclusion: 'failure'
+          },
+          expanded: true
+        })
+      )
+    )
+
+    expect(markup).toContain('min-h-48')
+    expect(markup).toContain('max-h-[min(50vh,32rem)]')
   })
 })

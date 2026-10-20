@@ -1,9 +1,21 @@
-import type { DiscoveredSkill, SkillProvider, SkillSourceKind } from '../../../../shared/skills'
+import type { DiscoveredSkill, SkillSourceKind } from '../../../../shared/skills'
+import { isClipboardTextByteLengthOverLimit } from '../../../../shared/clipboard-text'
+import { skillMatchesAgent } from './skill-agent-filter'
 
 export type SkillsFilterState = {
   query: string
   sourceKind: SkillSourceKind | 'all'
-  provider: SkillProvider | 'all'
+  /** Owning agent id, or 'all'. Resolved from the root a skill was found in. */
+  agent: string
+}
+
+export const SKILLS_FILTER_QUERY_MAX_BYTES = 2 * 1024
+
+export function isSkillsFilterQueryTooLarge(
+  query: string,
+  maxBytes = SKILLS_FILTER_QUERY_MAX_BYTES
+): boolean {
+  return isClipboardTextByteLengthOverLimit(query, maxBytes)
 }
 
 function normalize(value: string): string {
@@ -12,14 +24,18 @@ function normalize(value: string): string {
 
 export function filterSkills(
   skills: readonly DiscoveredSkill[],
-  filters: SkillsFilterState
+  filters: SkillsFilterState,
+  agentByRootPath: ReadonlyMap<string, string> = new Map()
 ): DiscoveredSkill[] {
+  if (isSkillsFilterQueryTooLarge(filters.query)) {
+    return []
+  }
   const query = normalize(filters.query)
   return skills.filter((skill) => {
     if (filters.sourceKind !== 'all' && skill.sourceKind !== filters.sourceKind) {
       return false
     }
-    if (filters.provider !== 'all' && !skill.providers.includes(filters.provider)) {
+    if (!skillMatchesAgent(skill, filters.agent, agentByRootPath)) {
       return false
     }
     if (!query) {

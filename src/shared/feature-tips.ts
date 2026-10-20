@@ -4,11 +4,21 @@ import {
   type FeatureInteractionState
 } from './feature-interactions'
 
-export type FeatureTipId = 'voice-dictation' | 'orca-cli' | 'cmd-j-palette'
+export type FeatureTipId =
+  | 'native-chat-upgrade'
+  | 'voice-dictation'
+  | 'orca-cli'
+  | 'cmd-j-palette'
+  | 'agent-session-search'
 
 export type FeatureTipPriority = 'new' | 'unseen'
 
-export type FeatureTipAction = 'enable-voice' | 'setup-cli' | 'learn-cmd-j-palette'
+export type FeatureTipAction =
+  | 'learn-native-chat-upgrade'
+  | 'enable-voice'
+  | 'setup-cli'
+  | 'learn-cmd-j-palette'
+  | 'enable-session-search'
 
 export type FeatureTip = {
   id: FeatureTipId
@@ -25,10 +35,37 @@ export type FeatureTip = {
 export type CompletedFeatureTipState = {
   cliInstalled: boolean
   voiceDictationEnabled: boolean
+  /** Search is on, or this client cannot turn it on. */
+  sessionSearchTipCompleted: boolean
+  /** Main's once-decided record; only profiles with Chat UI on before the chat upgrade are in it. */
+  inNativeChatUpgradeTipAudience: boolean
   featureInteractions?: FeatureInteractionState
 }
 
 export const FEATURE_TIPS = [
+  {
+    // Why: first so its audience sees it on the first launch after the upgrade.
+    id: 'native-chat-upgrade',
+    priority: 'new',
+    eyebrow: 'New',
+    title: 'Native chat got an upgrade',
+    description:
+      'New chats with supported agents now open in the upgraded chat view. To move between chat and CLI, open Agent Session History in the right sidebar:',
+    action: 'learn-native-chat-upgrade',
+    ctaLabel: 'Got it',
+    completedByFeatureInteractions: []
+  },
+  {
+    id: 'agent-session-search',
+    priority: 'new',
+    eyebrow: 'New',
+    title: 'Search every agent session',
+    description:
+      'Find any past conversation by what was said in it, then pick up where the agent left off.',
+    action: 'enable-session-search',
+    ctaLabel: 'Turn on session search',
+    completedByFeatureInteractions: []
+  },
   {
     id: 'orca-cli',
     priority: 'new',
@@ -56,11 +93,10 @@ export const FEATURE_TIPS = [
     id: 'voice-dictation',
     priority: 'unseen',
     eyebrow: 'Tip',
-    title: 'Voice Dictation is here',
-    description:
-      'Speak into any focused pane and Orca will transcribe it. Press the dictation shortcut to start and stop.',
+    title: 'Dictate into any pane',
+    description: 'Start voice dictation in any focused pane, then use the shortcut again to stop.',
     action: 'enable-voice',
-    ctaLabel: 'Set Up Voice',
+    ctaLabel: 'Set up voice dictation',
     completedByFeatureInteractions: ['voice-dictation']
   }
 ] as const satisfies readonly FeatureTip[]
@@ -92,6 +128,12 @@ export function getCompletedFeatureTipIds(state: CompletedFeatureTipState): Set<
   }
   if (state.voiceDictationEnabled) {
     completedIds.add('voice-dictation')
+  }
+  if (state.sessionSearchTipCompleted) {
+    completedIds.add('agent-session-search')
+  }
+  if (!state.inNativeChatUpgradeTipAudience) {
+    completedIds.add('native-chat-upgrade')
   }
   for (const tip of FEATURE_TIPS) {
     if (

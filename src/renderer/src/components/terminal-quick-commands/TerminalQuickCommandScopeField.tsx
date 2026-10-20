@@ -1,9 +1,9 @@
 import type { Dispatch, SetStateAction } from 'react'
+import type { Repo } from '../../../../shared/repo-types'
 import type {
-  Repo,
   TerminalQuickCommand,
   TerminalQuickCommandScope
-} from '../../../../shared/types'
+} from '../../../../shared/terminal-quick-command-types'
 import { Label } from '@/components/ui/label'
 import {
   Select,
@@ -18,7 +18,8 @@ import { QUICK_COMMAND_TOGGLE_ITEM_CLASS } from './terminal-quick-command-toggle
 import { translate } from '@/i18n/i18n'
 
 type TerminalQuickCommandScopeFieldProps = {
-  repos: Pick<Repo, 'id' | 'displayName' | 'path' | 'badgeColor'>[]
+  disabled: boolean
+  repos: readonly Pick<Repo, 'id' | 'displayName' | 'path' | 'badgeColor'>[]
   selectedScope: TerminalQuickCommandScope
   selectedRepoId: string
   selectedRepoMissing: boolean
@@ -32,13 +33,14 @@ function getRepoLabel(repo: Pick<Repo, 'displayName' | 'path'>): string {
 }
 
 export function getQuickCommandProjectScopeRepoId(
-  repos: Pick<Repo, 'id'>[],
+  repos: readonly Pick<Repo, 'id'>[],
   lastRepoScopeId: string | null
 ): string | null {
   return lastRepoScopeId ?? repos[0]?.id ?? null
 }
 
 export function TerminalQuickCommandScopeField({
+  disabled,
   repos,
   selectedScope,
   selectedRepoId,
@@ -57,6 +59,7 @@ export function TerminalQuickCommandScopeField({
       </Label>
       <div className="flex flex-wrap items-center gap-2">
         <ToggleGroup
+          disabled={disabled}
           type="single"
           value={selectedScope.type}
           onValueChange={(value) => {
@@ -100,6 +103,7 @@ export function TerminalQuickCommandScopeField({
         {selectedScope.type === 'repo' && repos.length > 0 ? (
           <div className="space-y-1">
             <Select
+              disabled={disabled}
               value={selectedRepoId}
               onValueChange={(repoId) => {
                 rememberRepoScopeId(repoId)
@@ -123,7 +127,7 @@ export function TerminalQuickCommandScopeField({
               </SelectTrigger>
               <SelectContent>
                 {repos.map((repo) => (
-                  <SelectItem key={repo.id} value={repo.id}>
+                  <SelectItem key={repo.id} value={repo.id} disabled={disabled}>
                     <RepoBadgeLabel
                       name={getRepoLabel(repo)}
                       color={repo.badgeColor}

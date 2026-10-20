@@ -1,21 +1,58 @@
 import { gitExecFileAsync } from '../git/runner'
-import type { SshGitProvider } from '../providers/ssh-git-provider'
+import {
+  githubPullRequestHeadLocalRef,
+  isSafeReviewHeadFetchRemote,
+  isValidReviewHeadNumber,
+  REVIEW_HEAD_FETCH_TIMEOUT_MS
+} from '../../shared/review-head-tracking-ref'
+import { getReviewHeadRemoteComponent } from '../git/review-head-remote-identity'
+import {
+  SSH_GIT_RECONNECT_MESSAGE,
+  SshHostNotServedError
+} from '../providers/ssh-host-not-served-error'
 
-// Why: the relay's read-only git.exec channel rejects `fetch`, so SSH repos
-// must use the dedicated git.fetchRemoteTrackingRef RPC.
+type LocalGitExecOptions = {
+  cwd: string
+  wslDistro?: string
+}
+
 export async function fetchPrHeadTrackingRef(
   repo: { path: string; connectionId?: string | null },
-  sshGitProvider: SshGitProvider | null | undefined,
   remote: string,
-  branch: string
+  branch: string,
+  options: { localGitExecOptions?: LocalGitExecOptions } = {}
 ): Promise<void> {
-  const ref = `refs/remotes/${remote}/${branch}`
-  if (!repo.connectionId) {
-    await gitExecFileAsync(['fetch', remote, `+refs/heads/${branch}:${ref}`], { cwd: repo.path })
-    return
+  if (repo.connectionId) {
+    throw new SshHostNotServedError(repo.connectionId, SSH_GIT_RECONNECT_MESSAGE)
   }
-  if (!sshGitProvider) {
-    throw new Error('SSH Git provider is not available. Reconnect to this target and try again.')
+  await gitExecFileAsync(
+    ['fetch', remote, `+refs/heads/${branch}:refs/remotes/${remote}/${branch}`],
+    options.localGitExecOptions ?? { cwd: repo.path }
+  )
+}
+
+export async function fetchGitHubPullRequestHeadRef(
+  repo: { path: string; connectionId?: string | null },
+  remote: string,
+  prNumber: number,
+  options: { localGitExecOptions?: LocalGitExecOptions } = {}
+): Promise<string> {
+  if (!isValidReviewHeadNumber(prNumber)) {
+    throw new Error(`Invalid pull request number: ${String(prNumber)}`)
   }
-  await sshGitProvider.fetchRemoteTrackingRef(repo.path, remote, branch, ref)
+  if (!isSafeReviewHeadFetchRemote(remote)) {
+    throw new Error('Pull request fetch remote must not start with "-".')
+  }
+  if (repo.connectionId) {
+    throw new SshHostNotServedError(repo.connectionId, SSH_GIT_RECONNECT_MESSAGE)
+  }
+  const localGitExecOptions = options.localGitExecOptions ?? { cwd: repo.path }
+  const remoteComponent = await getReviewHeadRemoteComponent(remote, localGitExecOptions)
+  // Why: return the same path the fetch wrote so callers don't re-resolve identity.
+  const localRef = githubPullRequestHeadLocalRef(remoteComponent, prNumber)
+  await gitExecFileAsync(
+    ['fetch', '--no-tags', remote, `+refs/pull/${prNumber}/head:${localRef}`],
+    { ...localGitExecOptions, timeout: REVIEW_HEAD_FETCH_TIMEOUT_MS }
+  )
+  return localRef
 }

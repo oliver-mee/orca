@@ -1,11 +1,12 @@
 import React from 'react'
 import { Search, X } from 'lucide-react'
+import { isClipboardTextByteLengthOverLimit } from '../../../../shared/clipboard-text'
 import { formatKeybindingList, type KeybindingDefinition } from '../../../../shared/keybindings'
 import { cn } from '../../lib/utils'
 import { Button } from '../ui/button'
 import { Input } from '../ui/input'
-import type { ShortcutTerminalStatus } from './ShortcutBindingRow'
-import type { SettingsSearchEntry } from './settings-search'
+import type { ShortcutTerminalStatus } from './shortcut-terminal-status'
+import { matchesSettingsSearch, type SettingsSearchEntry } from './settings-search'
 import { translate } from '@/i18n/i18n'
 
 export type ShortcutFilter = 'all' | 'modified' | 'unassigned' | 'conflicts'
@@ -31,6 +32,22 @@ const SHORTCUT_FILTER_LABELS: Record<ShortcutFilter, string> = {
   conflicts: 'Conflicts'
 }
 
+export const SHORTCUT_LOCAL_SEARCH_QUERY_MAX_BYTES = 2 * 1024
+
+export function isShortcutLocalSearchQueryTooLarge(
+  query: string,
+  maxBytes = SHORTCUT_LOCAL_SEARCH_QUERY_MAX_BYTES
+): boolean {
+  return isClipboardTextByteLengthOverLimit(query, maxBytes)
+}
+
+export function normalizeShortcutLocalSearchQuery(query: string): string | null {
+  if (isShortcutLocalSearchQueryTooLarge(query)) {
+    return null
+  }
+  return query.trim().toLowerCase()
+}
+
 export function getShortcutSearchEntry(row: ShortcutRowModel): SettingsSearchEntry {
   return {
     title: row.item.title,
@@ -41,6 +58,17 @@ export function getShortcutSearchEntry(row: ShortcutRowModel): SettingsSearchEnt
     ),
     keywords: [...row.item.searchKeywords]
   }
+}
+
+// Why: a sidebar query can select this pane by title alone while matching zero
+// rows; that would blank the list, so zero-row queries keep every row visible.
+export function buildShortcutGlobalSearchMatcher(
+  rows: readonly ShortcutRowModel[],
+  searchQuery: string
+): (row: ShortcutRowModel) => boolean {
+  const rowMatches = (row: ShortcutRowModel): boolean =>
+    matchesSettingsSearch(searchQuery, getShortcutSearchEntry(row))
+  return rows.some(rowMatches) ? rowMatches : () => true
 }
 
 export function matchesShortcutFilter(row: ShortcutRowModel, filter: ShortcutFilter): boolean {
@@ -63,6 +91,9 @@ export function matchesShortcutLocalSearch(
 ): boolean {
   if (!query) {
     return true
+  }
+  if (isShortcutLocalSearchQueryTooLarge(query)) {
+    return false
   }
   const searchableText = [
     row.item.title,

@@ -1,3 +1,5 @@
+import { getProcessOutputFields } from './process-output-field-scanner'
+
 export type ForkSyncMode = 'ask' | 'safe-auto' | 'off'
 
 export type GitForkSyncBlockedReason =
@@ -31,7 +33,7 @@ const DEFAULT_BRANCH_FALLBACKS = ['main', 'master']
 const GITHUB_HOSTS = new Set(['github.com', 'ssh.github.com'])
 
 function parseRemoteHeadBranch(stdout: string): string | null {
-  for (const line of stdout.split(/\r?\n/)) {
+  for (const line of iterateGitOutputLines(stdout)) {
     const match = /^ref:\s+refs\/heads\/(.+?)\s+HEAD$/.exec(line.trim())
     if (match?.[1]) {
       return match[1]
@@ -41,19 +43,32 @@ function parseRemoteHeadBranch(stdout: string): string | null {
 }
 
 function parseAheadBehind(stdout: string): { ahead: number; behind: number } {
-  const [aheadRaw, behindRaw] = stdout.trim().split(/\s+/, 2)
+  const [aheadRaw, behindRaw] = getProcessOutputFields(stdout, 2)
   return {
     ahead: Number.parseInt(aheadRaw ?? '0', 10) || 0,
     behind: Number.parseInt(behindRaw ?? '0', 10) || 0
   }
 }
 
-async function remoteExists(runGit: GitForkSyncRunner, remote: string): Promise<boolean> {
-  const { stdout } = await runGit(['remote'])
-  return stdout
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .includes(remote)
+function* iterateGitOutputLines(output: string): Generator<string> {
+  let lineStart = 0
+
+  for (let index = 0; index < output.length; index++) {
+    const code = output.charCodeAt(index)
+    if (code !== 10 && code !== 13) {
+      continue
+    }
+
+    yield output.slice(lineStart, index)
+    if (code === 13 && output.charCodeAt(index + 1) === 10) {
+      index++
+    }
+    lineStart = index + 1
+  }
+
+  if (lineStart <= output.length) {
+    yield output.slice(lineStart)
+  }
 }
 
 function cleanGitHubRemotePath(path: string): string | null {
@@ -222,11 +237,12 @@ export async function syncForkDefaultBranch(
   const upstreamRemote = options.upstreamRemote ?? DEFAULT_UPSTREAM_REMOTE
   const expectedUpstream = validateGitForkSyncExpectedUpstream(options.expectedUpstream)
   const baseResult = { originRemote, upstreamRemote, ahead: 0, behind: 0 }
-
-  if (!(await remoteExists(runGit, originRemote))) {
+  const { stdout: remoteStdout } = await runGit(['remote'])
+  const remotes = new Set(Array.from(iterateGitOutputLines(remoteStdout), (line) => line.trim()))
+  if (!remotes.has(originRemote)) {
     return { ...baseResult, status: 'blocked', reason: 'missing-origin' }
   }
-  if (!(await remoteExists(runGit, upstreamRemote))) {
+  if (!remotes.has(upstreamRemote)) {
     return { ...baseResult, status: 'blocked', reason: 'missing-upstream' }
   }
   if (
@@ -262,9 +278,13 @@ export async function syncForkDefaultBranch(
     return { ...resultWithBranch, status: 'blocked', reason: 'missing-origin-branch' }
   }
 
-  const counts = parseAheadBehind(
-    (await runGit(['rev-list', '--left-right', '--count', `${originOid}...${upstreamOid}`])).stdout
-  )
+  const counts =
+    originOid === upstreamOid && /^(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})$/.test(originOid)
+      ? { ahead: 0, behind: 0 }
+      : parseAheadBehind(
+          (await runGit(['rev-list', '--left-right', '--count', `${originOid}...${upstreamOid}`]))
+            .stdout
+        )
 
   if (counts.ahead > 0 || !(await isAncestor(runGit, originOid, upstreamOid))) {
     return { ...resultWithBranch, ...counts, status: 'blocked', reason: 'diverged' }

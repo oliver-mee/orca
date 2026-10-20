@@ -6,8 +6,15 @@ import { translate } from '@/i18n/i18n'
 import { translateSearchKeyword } from './settings-search-keywords'
 import { SHOW_UI_LANGUAGE_SETTING } from '@/i18n/supported-languages'
 import { getStatusBarToggles } from './appearance-status-bar-search'
+import { getUsagePercentageDisplayEntry } from './appearance-usage-percentage-search'
+import { getMenuBarIconEntries, getSystemTrayEntries } from './appearance-system-presence-search'
 
-export { getStatusBarToggles }
+export {
+  getMenuBarIconEntries,
+  getStatusBarToggles,
+  getSystemTrayEntries,
+  getUsagePercentageDisplayEntry
+}
 
 export const getThemeEntries = createLocalizedCatalog((): SettingsSearchEntry[] => [
   {
@@ -42,6 +49,17 @@ export const getLanguageEntries = createLocalizedCatalog((): SettingsSearchEntry
       ...translateSearchKeyword('settings.appearance.language.chinese', '中文（简体）'),
       ...translateSearchKeyword('settings.appearance.language.korean', '한국어'),
       ...translateSearchKeyword('settings.appearance.language.japanese', '日本語'),
+      ...translateSearchKeyword('settings.appearance.language.spanish', 'Español'),
+      ...translateSearchKeyword('settings.appearance.language.french', 'Français'),
+      // Why: the native word for "language" only reaches search via the localized
+      // title in its own UI locale — index each here so speakers can find (and
+      // switch to) their language whatever the current interface locale is.
+      '语言', // Chinese (Simplified)
+      '語言', // Chinese (Traditional)
+      '언어', // Korean
+      '言語', // Japanese
+      'Idioma', // Spanish
+      'Langue', // French
       ...translateSearchKeyword(
         'auto.components.settings.appearance.search.language.locale',
         'locale'
@@ -99,6 +117,29 @@ export const getTypographyEntries = createLocalizedCatalog((): SettingsSearchEnt
   }
 ])
 
+export const getFollowSymlinkedDirectoriesEntry = (): SettingsSearchEntry => ({
+  title: translate('settings.followSymlinkedDirectories', 'Follow symlinked directories'),
+  description: translate(
+    'settings.followSymlinkedDirectoriesDescription',
+    'Search linked folders in Quick Open and expand local linked folders in File Explorer.'
+  ),
+  keywords: [
+    ...translateSearchKeyword('settings.followSymlinkedDirectoriesKeywords.symlink', 'symlink'),
+    ...translateSearchKeyword(
+      'settings.followSymlinkedDirectoriesKeywords.linkedFolder',
+      'linked folder'
+    ),
+    ...translateSearchKeyword(
+      'settings.followSymlinkedDirectoriesKeywords.quickOpen',
+      'quick open'
+    ),
+    ...translateSearchKeyword(
+      'settings.followSymlinkedDirectoriesKeywords.fileExplorer',
+      'file explorer'
+    )
+  ]
+})
+
 export const getLayoutEntries = createLocalizedCatalog((): SettingsSearchEntry[] => [
   {
     title: translate(
@@ -123,7 +164,8 @@ export const getLayoutEntries = createLocalizedCatalog((): SettingsSearchEntry[]
       ...translateSearchKeyword('auto.components.settings.appearance.search.5bff6a2ef0', 'sidebar'),
       ...translateSearchKeyword('auto.components.settings.appearance.search.648eeada79', 'hide')
     ]
-  }
+  },
+  getFollowSymlinkedDirectoriesEntry()
 ])
 
 export const getTitlebarEntries = createLocalizedCatalog((): SettingsSearchEntry[] => [
@@ -146,13 +188,14 @@ export const getTitlebarEntries = createLocalizedCatalog((): SettingsSearchEntry
   }
 ])
 
-export const getStatusBarEntries = createLocalizedCatalog((): SettingsSearchEntry[] =>
-  getStatusBarToggles().map(({ title, description, keywords }) => ({
+export const getStatusBarEntries = createLocalizedCatalog((): SettingsSearchEntry[] => [
+  getUsagePercentageDisplayEntry(),
+  ...getStatusBarToggles().map(({ title, description, keywords }) => ({
     title,
     description,
     keywords
   }))
-)
+])
 
 export { getLeftSidebarAppearanceEntry, getSidebarEntries }
 
@@ -184,14 +227,36 @@ export const getAppIconEntries = createLocalizedCatalog((): SettingsSearchEntry[
   }
 ])
 
+const getAppearanceSectionEntries = createLocalizedCatalog((): SettingsSearchEntry[] => [
+  {
+    title: translate('auto.components.settings.AppearancePane.interfaceTitle', 'Interface')
+  },
+  {
+    title: translate('auto.components.settings.AppearancePane.terminalTitle', 'Terminal')
+  },
+  {
+    title: translate(
+      'auto.components.settings.AppearancePane.windowSidebarTitle',
+      'Window & Sidebar'
+    ),
+    description: translate(
+      'auto.components.settings.AppearancePane.windowSidebarSummary',
+      'Sidebar, status bar, and file explorer'
+    )
+  }
+])
+
 type AppearancePaneSearchOptions = {
-  showWarpImport?: boolean
+  showDesktopThemeImports?: boolean
+  showSystemTray?: boolean
+  showMenuBarIcon?: boolean
 }
 
-function buildAppearancePaneSearchEntries(
-  options: AppearancePaneSearchOptions
+export function getAppearancePaneSearchEntries(
+  options: AppearancePaneSearchOptions = {}
 ): SettingsSearchEntry[] {
   return [
+    ...getAppearanceSectionEntries(),
     ...getThemeEntries(),
     ...(SHOW_UI_LANGUAGE_SETTING ? getLanguageEntries() : []),
     ...getTypographyEntries(),
@@ -201,22 +266,8 @@ function buildAppearancePaneSearchEntries(
     ...getTitlebarEntries(),
     ...getStatusBarEntries(),
     ...getSidebarEntries(),
-    ...getAppIconEntries()
+    ...getAppIconEntries(),
+    ...getSystemTrayEntries(options),
+    ...getMenuBarIconEntries(options)
   ]
-}
-
-const getAppearancePaneSearchEntriesWithWarp = createLocalizedCatalog(() =>
-  buildAppearancePaneSearchEntries({ showWarpImport: true })
-)
-
-const getAppearancePaneSearchEntriesWithoutWarp = createLocalizedCatalog(() =>
-  buildAppearancePaneSearchEntries({ showWarpImport: false })
-)
-
-export function getAppearancePaneSearchEntries(
-  options: AppearancePaneSearchOptions = {}
-): SettingsSearchEntry[] {
-  return (options.showWarpImport ?? true)
-    ? getAppearancePaneSearchEntriesWithWarp()
-    : getAppearancePaneSearchEntriesWithoutWarp()
 }

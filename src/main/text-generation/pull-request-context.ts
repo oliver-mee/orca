@@ -1,10 +1,18 @@
 import type { PullRequestDraftContext } from '../../shared/pull-request-generation'
+import { isSafeGitRefName } from '../../shared/git-status-upstream-ref'
+import { isSafeReviewHeadFetchRemote } from '../../shared/review-head-tracking-ref'
+import { ReviewDraftContextError } from '../../shared/review-draft-context-error'
+import {
+  canQueryRemoteBaseRefs,
+  getPullRequestRemoteRefState,
+  type PullRequestRemoteRefState
+} from './pull-request-remote-ref-probes'
 
 const MAX_PULL_REQUEST_CONTEXT_BYTES = 10 * 1024 * 1024
 
 type GitExec = (
   args: string[],
-  options?: { maxBuffer?: number }
+  options?: { maxBuffer?: number; timeout?: number; timeoutMs?: number }
 ) => Promise<{ stdout: string; stderr?: string }>
 
 export type PullRequestContextInput = {
@@ -18,7 +26,10 @@ async function safeExec(execGit: GitExec, args: string[]): Promise<string> {
   try {
     const { stdout } = await execGit(args, { maxBuffer: MAX_PULL_REQUEST_CONTEXT_BYTES })
     return stdout.trim()
-  } catch {
+  } catch (error) {
+    if (error instanceof ReviewDraftContextError) {
+      throw error
+    }
     return ''
   }
 }
@@ -27,11 +38,13 @@ function summarizeGitError(error: unknown): string {
   if (!(error instanceof Error)) {
     return 'Git command failed.'
   }
-  const lines = error.message
-    .split('\n')
-    .map((line) => line.trim())
-    .filter(Boolean)
-  return lines.at(-1) ?? error.message
+  for (const rawLine of iterateGitOutputLinesFromEnd(error.message)) {
+    const line = rawLine.trim()
+    if (line.length > 0) {
+      return line
+    }
+  }
+  return error.message
 }
 
 async function requiredExec(execGit: GitExec, args: string[], label: string): Promise<string> {
@@ -43,33 +56,27 @@ async function requiredExec(execGit: GitExec, args: string[], label: string): Pr
   }
 }
 
-type RemoteState = {
-  remotes: string[]
-  refs: string[]
-}
+type RemoteBranch = { remote: string; branch: string; ref: string }
 
-type RemoteBranch = {
-  remote: string
-  branch: string
-  ref: string
-}
+function* iterateGitOutputLinesFromEnd(output: string): Generator<string> {
+  let lineEnd = output.length
+  let index = output.length - 1
 
-function splitGitLines(output: string): string[] {
-  return output
-    .split('\n')
-    .map((line) => line.trim())
-    .filter(Boolean)
-}
+  while (index >= 0) {
+    const code = output.charCodeAt(index)
+    if (code !== 10 && code !== 13) {
+      index--
+      continue
+    }
 
-async function getRemoteState(execGit: GitExec): Promise<RemoteState> {
-  const [remoteOutput, refOutput] = await Promise.all([
-    safeExec(execGit, ['remote']),
-    safeExec(execGit, ['for-each-ref', '--format=%(refname:short)', 'refs/remotes'])
-  ])
-  return {
-    remotes: splitGitLines(remoteOutput),
-    refs: splitGitLines(refOutput).filter((line) => !line.endsWith('/HEAD'))
+    const delimiterStart =
+      code === 10 && index > 0 && output.charCodeAt(index - 1) === 13 ? index - 1 : index
+    yield output.slice(index + 1, lineEnd)
+    lineEnd = delimiterStart
+    index = delimiterStart - 1
   }
+
+  yield output.slice(0, lineEnd)
 }
 
 function parseRemoteBranch(ref: string, remotes: string[]): RemoteBranch | null {
@@ -92,8 +99,12 @@ function parseRemoteRef(ref: string, remotes: string[]): RemoteBranch | null {
   if (slashIndex <= 0 || slashIndex === ref.length - 1) {
     return null
   }
+  const remote = ref.slice(0, slashIndex)
+  if (!isSafeReviewHeadFetchRemote(remote)) {
+    return null
+  }
   return {
-    remote: ref.slice(0, slashIndex),
+    remote,
     branch: ref.slice(slashIndex + 1),
     ref
   }
@@ -101,7 +112,7 @@ function parseRemoteRef(ref: string, remotes: string[]): RemoteBranch | null {
 
 function resolveComparisonBase(
   base: string,
-  state: RemoteState
+  state: PullRequestRemoteRefState
 ): {
   comparisonBase: string
   fetchTarget: RemoteBranch | null
@@ -122,7 +133,9 @@ function resolveComparisonBase(
     }
   }
 
-  const matchingRefs = state.refs.filter((ref) => ref.endsWith(`/${base}`))
+  const matchingRefs = state.probeUnknown
+    ? []
+    : state.refs.filter((ref) => ref.endsWith(`/${base}`))
   if (matchingRefs.length === 1) {
     const ref = matchingRefs[0]
     return { comparisonBase: ref, fetchTarget: parseRemoteRef(ref, state.remotes) }
@@ -132,7 +145,11 @@ function resolveComparisonBase(
 }
 
 async function fetchComparisonBase(execGit: GitExec, target: RemoteBranch | null): Promise<void> {
-  if (!target) {
+  if (
+    !target ||
+    !isSafeReviewHeadFetchRemote(target.remote) ||
+    !isSafeGitRefName(`refs/remotes/${target.remote}/${target.branch}`)
+  ) {
     return
   }
   await requiredExec(
@@ -156,7 +173,10 @@ async function preparePullRequestBranch(
   execGit: GitExec,
   base: string
 ): Promise<PullRequestBranchPreparation> {
-  const { comparisonBase, fetchTarget } = resolveComparisonBase(base, await getRemoteState(execGit))
+  const { comparisonBase, fetchTarget } = resolveComparisonBase(
+    base,
+    await getPullRequestRemoteRefState(execGit, base, MAX_PULL_REQUEST_CONTEXT_BYTES)
+  )
   // Why: PR generation only needs the selected base branch. A repo-wide
   // `fetch --all` makes stale contributor fork remotes block unrelated PRs.
   await fetchComparisonBase(execGit, fetchTarget)
@@ -173,7 +193,7 @@ export async function getPullRequestDraftContext(
   input: PullRequestContextInput
 ): Promise<PullRequestDraftContext | null> {
   const base = input.base.trim()
-  if (!base || base.startsWith('-')) {
+  if (!base || base.startsWith('-') || !canQueryRemoteBaseRefs(base)) {
     return null
   }
 
@@ -188,7 +208,14 @@ export async function getPullRequestDraftContext(
 
   const range = `${mergeBase}..HEAD`
   const [commitSummary, changeSummary, patch] = await Promise.all([
-    safeExec(execGit, ['log', '--pretty=format:- %s', '--max-count=50', range]),
+    safeExec(execGit, [
+      'log',
+      '--no-show-signature',
+      '--no-color',
+      '--pretty=format:- %s',
+      '--max-count=50',
+      range
+    ]),
     safeExec(execGit, ['diff', '--name-status', range]),
     safeExec(execGit, ['diff', '--patch', '--minimal', '--no-color', '--no-ext-diff', range])
   ])

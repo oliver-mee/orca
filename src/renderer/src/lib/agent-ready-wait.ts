@@ -1,4 +1,4 @@
-import { detectAgentStatusFromTitle } from '../../../shared/agent-detection'
+import { classifyTitleActivity } from '@/lib/pane-agent-evidence'
 import { isExpectedAgentProcess } from '../../../shared/agent-process-recognition'
 import { isShellProcess } from './tui-agent-startup'
 import { useAppStore } from '@/store'
@@ -51,7 +51,7 @@ function titleSuggestsReady(tabId: string): boolean {
       }
     }
   }
-  return titles.some((title) => detectAgentStatusFromTitle(title) === 'idle')
+  return titles.some((title) => classifyTitleActivity(title) === 'idle')
 }
 
 /**
@@ -91,7 +91,7 @@ export async function waitForAgentReady(
     }
 
     try {
-      const process = await inspectRuntimeTerminalProcess(useAppStore.getState().settings, ptyId)
+      const process = await inspectRuntimeTerminalProcess(ptyId)
       const foreground = process.foregroundProcess?.toLowerCase() ?? ''
       if (isExpectedAgentProcess(foreground, expectedProcess)) {
         return { ready: true, reason: 'foreground-match' }

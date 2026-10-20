@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, afterEach, vi } from 'vitest'
 import {
   FEATURE_WALL_SETUP_STEPS,
   type FeatureWallSetupStepId
@@ -26,9 +26,8 @@ describe('settings setup guide progress', () => {
     })
   })
 
-  it('does not mark Settings complete when only the old five-step subset is done', () => {
+  it('does not mark Settings complete when only the old setup subset is done', () => {
     const stepDone = {
-      'split-terminal': true,
       'two-worktrees': true,
       notifications: true,
       'default-agent': true,
@@ -37,7 +36,7 @@ describe('settings setup guide progress', () => {
 
     expect(getSettingsSetupGuideProgress({ ready: true, stepDone })).toEqual({
       ready: true,
-      doneCount: 5,
+      doneCount: 4,
       total: FEATURE_WALL_SETUP_STEPS.length,
       firstIncompleteStepId: 'agent-capabilities'
     })
@@ -74,11 +73,30 @@ describe('settings setup guide progress', () => {
     const progress = getSettingsSetupGuideProgress({
       ready: false,
       stepDone: {
-        'split-terminal': true
+        'two-worktrees': true
       }
     })
 
     expect(progress.ready).toBe(false)
     expect(progress.doneCount).toBe(1)
   })
+})
+
+const { rejectAppStoreAccess } = vi.hoisted(() => ({
+  rejectAppStoreAccess: vi.fn(() => {
+    throw new Error('Pure helper tests must not access the app store')
+  })
+}))
+
+vi.mock('@/store', () => ({
+  useAppStore: Object.assign(rejectAppStoreAccess, {
+    getState: rejectAppStoreAccess,
+    getInitialState: rejectAppStoreAccess,
+    setState: rejectAppStoreAccess,
+    subscribe: rejectAppStoreAccess
+  })
+}))
+
+afterEach(() => {
+  expect(rejectAppStoreAccess).not.toHaveBeenCalled()
 })

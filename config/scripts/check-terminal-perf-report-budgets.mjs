@@ -1,5 +1,6 @@
-import { readFileSync } from 'node:fs'
 import { basename } from 'node:path'
+import { collectTerminalPerfRows, readJsonReport } from './terminal-perf-report-annotations.mjs'
+import { reportBudgetsForScenario } from './terminal-perf-report-budgets.mjs'
 
 const reportPaths = process.argv.slice(2)
 if (reportPaths[0] === '--') {
@@ -11,68 +12,6 @@ if (reportPaths.length === 0) {
     'Usage: node config/scripts/check-terminal-perf-report-budgets.mjs <playwright-json>...'
   )
   process.exit(1)
-}
-
-// Why: these mirror the e2e regression ceilings so saved JSON reports can fail
-// in automation without rerunning Electron or changing the human summary table.
-const BUDGETS = {
-  maxMedianKeyLatencyMs: 75,
-  maxWorstKeyLatencyMs: 300,
-  maxTimerDriftMs: 150,
-  maxScrollLatencyMs: 150,
-  maxRestoreLatencyMs: 1000,
-  maxRendererQueuedChars: 2 * 1024 * 1024,
-  maxRendererPeakQueuedChars: 2 * 1024 * 1024,
-  maxRendererDroppedBacklogs: 0
-}
-
-function readJsonReport(path) {
-  const raw = readFileSync(path, 'utf8')
-  const start = raw.indexOf('{')
-  const end = raw.lastIndexOf('}')
-  if (start === -1 || end <= start) {
-    throw new Error(`${path}: no JSON object found`)
-  }
-  return JSON.parse(raw.slice(start, end + 1))
-}
-
-function parseAnnotationDescription(description) {
-  const values = {}
-  for (const part of description.split(/\s+/)) {
-    const index = part.indexOf('=')
-    if (index === -1) {
-      continue
-    }
-    values[part.slice(0, index)] = part.slice(index + 1)
-  }
-  return values
-}
-
-function collectTerminalPerfRows(report, source) {
-  const rows = []
-  const visitSuite = (suite) => {
-    for (const spec of suite.specs ?? []) {
-      for (const test of spec.tests ?? []) {
-        for (const annotation of test.annotations ?? []) {
-          if (!annotation.type.startsWith('opencode-')) {
-            continue
-          }
-          rows.push({
-            source,
-            scenario: annotation.type,
-            ...parseAnnotationDescription(annotation.description ?? '')
-          })
-        }
-      }
-    }
-    for (const child of suite.suites ?? []) {
-      visitSuite(child)
-    }
-  }
-  for (const suite of report.suites ?? []) {
-    visitSuite(suite)
-  }
-  return rows
 }
 
 function parseMs(value, fieldName, row, failures) {
@@ -111,6 +50,7 @@ function addMaxFailure(failures, row, label, actual, budget, unit = '') {
 function validateRow(row) {
   const failures = []
   let checkedMetricCount = 0
+  const budgets = reportBudgetsForScenario(row.scenario)
   const addBudgetCheck = (label, actual, budget, unit = '') => {
     if (actual != null) {
       checkedMetricCount += 1
@@ -120,48 +60,62 @@ function validateRow(row) {
   addBudgetCheck(
     'median typing latency',
     parseMs(row.median, 'median', row, failures),
-    BUDGETS.maxMedianKeyLatencyMs,
+    budgets.median,
     'ms'
   )
   addBudgetCheck(
     'worst typing latency',
     parseMs(row.worst, 'worst', row, failures),
-    BUDGETS.maxWorstKeyLatencyMs,
+    budgets.worst,
+    'ms'
+  )
+  addBudgetCheck(
+    'revisit latency',
+    parseMs(row.revisit, 'revisit', row, failures),
+    budgets.revisit,
     'ms'
   )
   addBudgetCheck(
     'timer drift',
     parseMs(row.maxTimerDrift, 'maxTimerDrift', row, failures),
-    BUDGETS.maxTimerDriftMs,
+    budgets.maxTimerDrift,
     'ms'
   )
   addBudgetCheck(
     'scroll latency',
     parseMs(row.scroll, 'scroll', row, failures),
-    BUDGETS.maxScrollLatencyMs,
+    budgets.scroll,
     'ms'
   )
   addBudgetCheck(
     'restore latency',
     parseMs(row.restore, 'restore', row, failures),
-    BUDGETS.maxRestoreLatencyMs,
+    budgets.restore,
     'ms'
   )
   addBudgetCheck(
     'renderer queued chars',
     parseCount(row.rendererQueuedChars, 'rendererQueuedChars', row, failures),
-    BUDGETS.maxRendererQueuedChars
+    budgets.rendererQueuedChars
   )
   addBudgetCheck(
     'renderer peak queued chars',
     parseCount(row.rendererPeakQueuedChars, 'rendererPeakQueuedChars', row, failures),
-    BUDGETS.maxRendererPeakQueuedChars
+    budgets.rendererPeakQueuedChars
   )
   addBudgetCheck(
     'renderer dropped backlogs',
     parseCount(row.rendererDroppedBacklogs, 'rendererDroppedBacklogs', row, failures),
-    BUDGETS.maxRendererDroppedBacklogs
+    budgets.rendererDroppedBacklogs
   )
+  // Why: parked-memory rows carry heap/view-count metrics with no latency
+  // budget; recognize them so memory-only scenarios pass the gate instead of
+  // tripping the "no recognized budget metrics" guard.
+  for (const fieldName of ['heapUsedMB', 'liveTerminals', 'livePaneManagers']) {
+    if (parseCount(row[fieldName], fieldName, row, failures) != null) {
+      checkedMetricCount += 1
+    }
+  }
   if (checkedMetricCount === 0) {
     failures.push(`${row.source} ${row.scenario}: no recognized budget metrics found`)
   }

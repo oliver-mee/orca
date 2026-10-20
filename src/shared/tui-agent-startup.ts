@@ -1,101 +1,39 @@
+import { withFreshOmpLaunch, isFreshOmpLaunchCommand } from './omp-fresh-launch'
+import { withOmpDraftCleanup } from './omp-draft-launch'
 import { isShellProcess } from './agent-detection'
+import type { SleepingAgentLaunchConfig } from './agent-session-resume'
 import {
-  getAgentResumeArgv,
-  type AgentProviderSessionMetadata,
-  type ResumableTuiAgent
-} from './agent-session-resume'
-import { tokenizeCustomCommandTemplate } from './commit-message-prompt'
+  clearEnvCommand,
+  commandSeparator,
+  quoteStartupArg,
+  resolveStartupShell,
+  type AgentStartupShell
+} from './tui-agent-startup-shell'
 import { TUI_AGENT_CONFIG } from './tui-agent-config'
-import type { TuiAgent } from './types'
+import type { StartupCommandDelivery } from './codex-startup-delivery'
+import { buildSleepingAgentLaunchConfig } from './sleeping-agent-launch-config'
+import { planHermesStartupQuery } from './hermes-startup-query'
+import { inlineAgentDraftFitsPlatform } from './agent-draft-platform-limit'
+import type { TuiAgent } from './tui-agent'
+import type { SessionOptionValue } from './native-chat-session-options'
+import { resolveAgentLaunchCommand } from './tui-agent-launch-command'
+import { appliedSessionOptionProps, buildFlagPromptStartupPlan } from './flag-prompt-startup'
+
+export { buildAgentResumeStartupPlan } from './tui-agent-resume-startup'
 
 export type AgentStartupPlan = {
   agent: TuiAgent
   launchCommand: string
   expectedProcess: string
   followupPrompt: string | null
+  launchConfig: SleepingAgentLaunchConfig
+  launchToken?: string
   draftPrompt?: string | null
   env?: Record<string, string>
-}
-
-export type AgentStartupShell = 'posix' | 'powershell' | 'cmd'
-
-export function resolveStartupShell(
-  platform: NodeJS.Platform,
-  shell?: AgentStartupShell
-): AgentStartupShell {
-  return shell ?? (platform === 'win32' ? 'powershell' : 'posix')
-}
-
-export function quoteStartupArg(value: string, shell: AgentStartupShell): string {
-  if (shell === 'powershell') {
-    return `'${value.replace(/'/g, "''")}'`
-  }
-  if (shell === 'cmd') {
-    return `"${value.replace(/([\^&|<>()%!"])/g, '^$1')}"`
-  }
-  return `'${value.replace(/'/g, `'\\''`)}'`
-}
-
-export function buildShellCommandFromArgv(
-  args: readonly string[],
-  shell: AgentStartupShell
-): string {
-  const command = args.map((arg) => quoteStartupArg(arg, shell)).join(' ')
-  if (shell === 'powershell' && command) {
-    return `& ${command}`
-  }
-  return command
-}
-
-function clearEnvCommand(name: string, shell: AgentStartupShell): string {
-  if (shell === 'powershell') {
-    return `Remove-Item Env:${name} -ErrorAction SilentlyContinue`
-  }
-  if (shell === 'cmd') {
-    return `set "${name}="`
-  }
-  return `unset ${name}`
-}
-
-function commandSeparator(shell: AgentStartupShell): string {
-  return shell === 'cmd' ? ' & ' : '; '
-}
-
-export type AgentCliArgsPlan = { ok: true; suffix: string } | { ok: false; error: string }
-
-export function planAgentCliArgsSuffix(
-  agentArgs: string | null | undefined,
-  shell: AgentStartupShell
-): AgentCliArgsPlan {
-  const trimmed = agentArgs?.trim()
-  if (!trimmed) {
-    return { ok: true, suffix: '' }
-  }
-  const tokenized = tokenizeCustomCommandTemplate(trimmed)
-  if (!tokenized.ok) {
-    return { ok: false, error: `CLI arguments are invalid: ${tokenized.error}` }
-  }
-  return {
-    ok: true,
-    suffix: tokenized.tokens.map((token) => quoteStartupArg(token, shell)).join(' ')
-  }
-}
-
-function resolveBaseCommand(args: {
-  agent: TuiAgent
-  cmdOverrides: Partial<Record<TuiAgent, string>>
-  shell: AgentStartupShell
-  agentArgs?: string | null
-}): { ok: true; command: string } | { ok: false; error: string } {
-  const override = args.cmdOverrides[args.agent]
-  const command = override || TUI_AGENT_CONFIG[args.agent].launchCmd
-  const suffix = planAgentCliArgsSuffix(args.agentArgs, args.shell)
-  if (!suffix.ok) {
-    return suffix
-  }
-  // Why: Codex status hooks live in Orca's runtime CODEX_HOME; adding
-  // --profile-v2 makes Codex load a second hook representation and warn.
-  return { ok: true, command: suffix.suffix ? `${command} ${suffix.suffix}` : command }
+  startupCommandDelivery?: StartupCommandDelivery
+  /** Values actually emitted into this launch command, kept as base model ids
+   * so the native-chat surface can render only launch-backed state. */
+  sessionOptions?: Record<string, SessionOptionValue>
 }
 
 export function buildAgentStartupPlan(args: {
@@ -107,20 +45,38 @@ export function buildAgentStartupPlan(args: {
   allowEmptyPromptLaunch?: boolean
   agentArgs?: string | null
   agentEnv?: Record<string, string> | null
+  sessionOptions?: Record<string, SessionOptionValue>
+  sessionOptionsOverrideAgentArgs?: boolean
+  /** Why: SSH remotes deploy the CLI shim as plain `orca`, so the Linux-only
+   * `orca-ide` rename must be skipped for remote launches. */
+  isRemote?: boolean
 }): AgentStartupPlan | null {
   const { agent, prompt, cmdOverrides, platform, allowEmptyPromptLaunch = false } = args
   const shell = resolveStartupShell(platform, args.shell)
   const trimmedPrompt = prompt.trim()
   const config = TUI_AGENT_CONFIG[agent]
-  const baseCommand = resolveBaseCommand({
+  const usesQuery = config.promptInjectionMode === 'hermes-query' && Boolean(trimmedPrompt)
+  const baseCommand = resolveAgentLaunchCommand({
     agent,
     cmdOverrides,
+    platform,
     shell,
-    agentArgs: args.agentArgs
+    agentArgs: usesQuery ? null : args.agentArgs,
+    sessionOptions: args.sessionOptions,
+    sessionOptionsOverrideAgentArgs: args.sessionOptionsOverrideAgentArgs,
+    isRemote: args.isRemote
   })
   if (!baseCommand.ok) {
     return null
   }
+  const launchCommand =
+    agent === 'omp' ? withFreshOmpLaunch(baseCommand.command, shell) : baseCommand.command
+  const launchConfig = buildSleepingAgentLaunchConfig({
+    ...args,
+    // Why: picker flags are a one-time launch choice; a resumed provider
+    // session restores its own state and must retain only explicit user args.
+    agentCommand: baseCommand.commandWithoutSessionOptions
+  })
 
   if (!trimmedPrompt) {
     if (!allowEmptyPromptLaunch) {
@@ -128,9 +84,11 @@ export function buildAgentStartupPlan(args: {
     }
     return {
       agent,
-      launchCommand: baseCommand.command,
+      launchCommand,
       expectedProcess: config.expectedProcess,
       followupPrompt: null,
+      launchConfig,
+      ...appliedSessionOptionProps(baseCommand.appliedSessionOptions),
       ...(args.agentEnv ? { env: { ...args.agentEnv } } : {})
     }
   }
@@ -138,31 +96,69 @@ export function buildAgentStartupPlan(args: {
   const quotedPrompt = quoteStartupArg(trimmedPrompt, shell)
 
   if (config.promptInjectionMode === 'argv') {
+    const promptSeparator = config.argvPromptSeparator ? ` ${config.argvPromptSeparator}` : ''
     return {
       agent,
-      launchCommand: `${baseCommand.command} ${quotedPrompt}`,
+      launchCommand:
+        agent === 'omp'
+          ? withFreshOmpLaunch(baseCommand.command, shell, `${promptSeparator} ${quotedPrompt}`)
+          : `${launchCommand}${promptSeparator} ${quotedPrompt}`,
       expectedProcess: config.expectedProcess,
       followupPrompt: null,
+      launchConfig,
+      ...appliedSessionOptionProps(baseCommand.appliedSessionOptions),
+      ...(agent === 'codex' ? { startupCommandDelivery: 'shell-ready' as const } : {}),
       ...(args.agentEnv ? { env: { ...args.agentEnv } } : {})
     }
   }
 
   if (config.promptInjectionMode === 'flag-prompt') {
+    return buildFlagPromptStartupPlan({
+      agent,
+      launchCommand,
+      quotedPrompt,
+      prompt: trimmedPrompt,
+      shell,
+      launchConfig,
+      sessionOptions: baseCommand.appliedSessionOptions,
+      agentEnv: args.agentEnv
+    })
+  }
+
+  if (config.promptInjectionMode === 'hermes-query') {
+    const queryPlan = planHermesStartupQuery({
+      baseCommand: baseCommand.command,
+      agentArgs: args.agentArgs,
+      prompt: trimmedPrompt,
+      agentEnv: args.agentEnv,
+      platform,
+      shell,
+      isRemote: args.isRemote
+    })
+    if (!queryPlan) {
+      return null
+    }
     return {
       agent,
-      launchCommand: `${baseCommand.command} --prompt ${quotedPrompt}`,
+      // Why: Hermes owns readiness and submission for `chat --query`; Orca
+      // only bounds and quotes the native invocation before starting the TUI.
+      launchCommand: queryPlan.command,
       expectedProcess: config.expectedProcess,
       followupPrompt: null,
-      ...(args.agentEnv ? { env: { ...args.agentEnv } } : {})
+      launchConfig,
+      ...appliedSessionOptionProps(baseCommand.appliedSessionOptions),
+      ...(queryPlan.env ? { env: queryPlan.env } : {})
     }
   }
 
   if (config.promptInjectionMode === 'flag-prompt-interactive') {
     return {
       agent,
-      launchCommand: `${baseCommand.command} --prompt-interactive ${quotedPrompt}`,
+      launchCommand: `${launchCommand} --prompt-interactive ${quotedPrompt}`,
       expectedProcess: config.expectedProcess,
       followupPrompt: null,
+      launchConfig,
+      ...appliedSessionOptionProps(baseCommand.appliedSessionOptions),
       ...(args.agentEnv ? { env: { ...args.agentEnv } } : {})
     }
   }
@@ -170,65 +166,50 @@ export function buildAgentStartupPlan(args: {
   if (config.promptInjectionMode === 'flag-interactive') {
     return {
       agent,
-      launchCommand: `${baseCommand.command} -i ${quotedPrompt}`,
+      launchCommand: `${launchCommand} -i ${quotedPrompt}`,
       expectedProcess: config.expectedProcess,
       followupPrompt: null,
+      launchConfig,
+      ...appliedSessionOptionProps(baseCommand.appliedSessionOptions),
       ...(args.agentEnv ? { env: { ...args.agentEnv } } : {})
     }
   }
 
   return {
     agent,
-    launchCommand: baseCommand.command,
+    launchCommand,
     expectedProcess: config.expectedProcess,
     followupPrompt: trimmedPrompt,
+    launchConfig,
+    ...appliedSessionOptionProps(baseCommand.appliedSessionOptions),
     ...(args.agentEnv ? { env: { ...args.agentEnv } } : {})
   }
 }
 
-export function buildAgentResumeStartupPlan(args: {
-  agent: ResumableTuiAgent
-  providerSession: AgentProviderSessionMetadata
-  cmdOverrides: Partial<Record<TuiAgent, string>>
-  platform: NodeJS.Platform
-  shell?: AgentStartupShell
-  agentArgs?: string | null
-  agentEnv?: Record<string, string> | null
-}): AgentStartupPlan | null {
-  const argv = getAgentResumeArgv(args.agent, args.providerSession)
-  if (!argv) {
-    return null
-  }
-  const shell = resolveStartupShell(args.platform, args.shell)
-  const config = TUI_AGENT_CONFIG[args.agent]
-  const baseCommand = resolveBaseCommand({
-    agent: args.agent,
-    cmdOverrides: args.cmdOverrides,
-    shell,
-    agentArgs: args.agentArgs
-  })
-  if (!baseCommand.ok) {
-    return null
-  }
-  const resumeArgs = argv
-    .slice(1)
-    .map((arg) => quoteStartupArg(arg, shell))
-    .join(' ')
-  const launchCommand = resumeArgs ? `${baseCommand.command} ${resumeArgs}` : baseCommand.command
-  return {
-    agent: args.agent,
-    launchCommand,
-    expectedProcess: config.expectedProcess,
-    followupPrompt: null,
-    ...(args.agentEnv ? { env: { ...args.agentEnv } } : {})
-  }
+/**
+ * Whether this agent's prompt rides the launch command rather than the live PTY.
+ *
+ * The same question `buildAgentStartupPlan` answers by returning `followupPrompt: null`, asked
+ * before a command exists — a caller deciding how to deliver a prompt has to know which half it is
+ * getting while it is still choosing what to create. Derived from the one injection table rather
+ * than restating it, and pinned against the builder for every agent by
+ * `tui-agent-prompt-transport.test.ts`, so the two cannot answer differently.
+ *
+ * Every mode but `stdin-after-start` folds the prompt into argv — that is what argv is FOR, so
+ * multi-line and special-character text reaches the CLI as one argument instead of keystrokes.
+ */
+export function agentPromptRidesLaunchCommand(agent: TuiAgent): boolean {
+  return TUI_AGENT_CONFIG[agent].promptInjectionMode !== 'stdin-after-start'
 }
 
 export type AgentDraftLaunchPlan = {
   agent: TuiAgent
   launchCommand: string
   expectedProcess: string
+  launchConfig: SleepingAgentLaunchConfig
   env?: Record<string, string>
+  startupCommandDelivery?: StartupCommandDelivery
+  sessionOptions?: Record<string, SessionOptionValue>
 }
 
 export function buildAgentDraftLaunchPlan(args: {
@@ -239,6 +220,10 @@ export function buildAgentDraftLaunchPlan(args: {
   shell?: AgentStartupShell
   agentArgs?: string | null
   agentEnv?: Record<string, string> | null
+  sessionOptions?: Record<string, SessionOptionValue>
+  sessionOptionsOverrideAgentArgs?: boolean
+  /** Why: see buildAgentStartupPlan — remote launches use the plain `orca` shim. */
+  isRemote?: boolean
 }): AgentDraftLaunchPlan | null {
   const { agent, draft, cmdOverrides, platform } = args
   const shell = resolveStartupShell(platform, args.shell)
@@ -247,34 +232,71 @@ export function buildAgentDraftLaunchPlan(args: {
   if (!trimmed) {
     return null
   }
-  const baseCommand = resolveBaseCommand({
+  const baseCommand = resolveAgentLaunchCommand({
     agent,
     cmdOverrides,
+    platform,
     shell,
-    agentArgs: args.agentArgs
+    agentArgs: args.agentArgs,
+    sessionOptions: args.sessionOptions,
+    sessionOptionsOverrideAgentArgs: args.sessionOptionsOverrideAgentArgs,
+    isRemote: args.isRemote
   })
   if (!baseCommand.ok) {
     return null
   }
+  const launchCommand =
+    agent === 'omp' ? withFreshOmpLaunch(baseCommand.command, shell) : baseCommand.command
+  const launchConfig = buildSleepingAgentLaunchConfig({
+    ...args,
+    // Why: see the new-session path above — resume must not replay picker flags.
+    agentCommand: baseCommand.commandWithoutSessionOptions
+  })
+  let plan: AgentDraftLaunchPlan | null = null
+  if (config.draftPromptFlag && shell === 'cmd' && /[\r\n]/.test(trimmed)) {
+    // Why: cmd.exe cannot quote a newline, so each one would submit the line early; paste instead.
+    return null
+  }
   if (config.draftPromptFlag) {
     const quoted = quoteStartupArg(trimmed, shell)
-    return {
+    plan = {
       agent,
-      launchCommand: `${baseCommand.command} ${config.draftPromptFlag} ${quoted}`,
+      launchCommand: `${launchCommand} ${config.draftPromptFlag} ${quoted}`,
       expectedProcess: config.expectedProcess,
+      launchConfig,
+      ...appliedSessionOptionProps(baseCommand.appliedSessionOptions),
+      // Why: native draft flags carry user text on argv and must survive rc-file startup.
+      ...(agent === 'codex' ? { startupCommandDelivery: 'shell-ready' as const } : {}),
       ...(args.agentEnv ? { env: { ...args.agentEnv } } : {})
     }
-  }
-  if (config.draftPromptEnvVar) {
+  } else if (config.draftPromptEnvVar) {
     const clearVar = clearEnvCommand(config.draftPromptEnvVar, shell)
-    return {
+    plan = {
       agent,
-      launchCommand: `${baseCommand.command}${commandSeparator(shell)}${clearVar}`,
+      launchCommand:
+        agent === 'omp' && isFreshOmpLaunchCommand(launchCommand)
+          ? withOmpDraftCleanup(launchCommand, shell)
+          : `${launchCommand}${commandSeparator(shell)}${clearVar}`,
       expectedProcess: config.expectedProcess,
+      launchConfig,
+      ...appliedSessionOptionProps(baseCommand.appliedSessionOptions),
       env: { ...args.agentEnv, [config.draftPromptEnvVar]: trimmed }
     }
   }
-  return null
+  if (
+    !plan ||
+    !inlineAgentDraftFitsPlatform({ command: plan.launchCommand, env: plan.env, platform })
+  ) {
+    return null
+  }
+  return plan
 }
 
 export { isShellProcess }
+export {
+  buildShellCommandFromArgv,
+  planAgentCliArgsSuffix,
+  quoteStartupArg,
+  resolveStartupShell
+} from './tui-agent-startup-shell'
+export type { AgentCliArgsPlan, AgentStartupShell } from './tui-agent-startup-shell'

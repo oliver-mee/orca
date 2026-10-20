@@ -1,5 +1,8 @@
-import type { Tab, TabContentType, TabGroup, WorkspaceSessionState } from '../../../../shared/types'
+import type { Tab, TabContentType, TabGroup } from '../../../../shared/tab-types'
+import type { WorkspaceSessionState } from '../../../../shared/workspace-session-state-types'
 import { createBrowserUuid } from '@/lib/browser-uuid'
+import { ORCA_LAYOUT_OWNER_IS_MAIN } from '../../../../shared/layout-owner-switch'
+import { workspaceRootGroupId } from '../../../../shared/workspace-layout/workspace-layout-minted-ids'
 
 export function findTabAndWorktree(
   tabsByWorktree: Record<string, Tab[]>,
@@ -70,7 +73,8 @@ export function ensureGroup(
   if (existing) {
     return { group: existing, groupsByWorktree, activeGroupIdByWorktree }
   }
-  const groupId = createBrowserUuid()
+  // Switch point: the root group id main and the Loader mint for a workspace with no group.
+  const groupId = ORCA_LAYOUT_OWNER_IS_MAIN ? workspaceRootGroupId(worktreeId) : createBrowserUuid()
   const group: TabGroup = { id: groupId, worktreeId, activeTabId: null, tabOrder: [] }
   return {
     group,
@@ -113,7 +117,7 @@ export function sanitizeRecentTabIds(recent: string[] | undefined, tabOrder: str
     seen.add(id)
     reversed.push(id)
   }
-  return reversed.reverse()
+  return reversed.toReversed()
 }
 
 /** Push `tabId` to the tail of the MRU stack (most-recently-active) after
@@ -135,8 +139,13 @@ export function pushRecentTabId(recent: string[] | undefined, tabId: string): st
 export function pickNextActiveTab(
   tabOrder: string[],
   recentTabIds: string[] | undefined,
-  closingTabId: string
+  closingTabId: string,
+  tabs?: readonly Pick<Tab, 'id'>[]
 ): string | null {
+  if (tabs) {
+    const realIds = new Set(tabs.map((tab) => tab.id))
+    tabOrder = tabOrder.filter((id) => realIds.has(id))
+  }
   const sanitized = sanitizeRecentTabIds(recentTabIds, tabOrder)
   // The closing tab is typically at the tail (it's the active tab). Walk back
   // from the tail looking for the most-recent *other* tab still present.
@@ -183,17 +192,47 @@ export function selectHydratedActiveGroupId(
   return candidates[0]?.id
 }
 
-export function dedupeTabOrder(tabIds: string[]): string[] {
+/**
+ * Persisted sessions can hold two tab records under one id (editor owner
+ * migration re-stamps a tab id that another record already carries). Downstream
+ * consumers key React lists by tab id, and a repeated key leaves the extra row
+ * mounted forever, so the duplicate has to die at hydration.
+ */
+export function dedupeTabsById<T extends { id: string }>(tabs: T[]): T[] {
   const seen = new Set<string>()
-  const deduped: string[] = []
-  for (const tabId of tabIds) {
-    if (seen.has(tabId)) {
-      continue
+  return tabs.filter((tab) => {
+    if (seen.has(tab.id)) {
+      return false
     }
-    seen.add(tabId)
-    deduped.push(tabId)
-  }
-  return deduped
+    seen.add(tab.id)
+    return true
+  })
+}
+
+export function dedupeEditorTabsWithinGroups(tabs: Tab[]): {
+  tabs: Tab[]
+  tabIdAliasesByGroup: Map<string, Map<string, string>>
+} {
+  const tabIdAliasesByGroup = new Map<string, Map<string, string>>()
+  const editorTabIdByGroupAndEntity = new Map<string, Map<string, string>>()
+  const dedupedTabs = dedupeTabsById(tabs).filter((tab) => {
+    if (tab.contentType !== 'editor') {
+      return true
+    }
+    const editorTabIdByEntity =
+      editorTabIdByGroupAndEntity.get(tab.groupId) ?? new Map<string, string>()
+    editorTabIdByGroupAndEntity.set(tab.groupId, editorTabIdByEntity)
+    const existingTabId = editorTabIdByEntity.get(tab.entityId)
+    if (existingTabId !== undefined) {
+      const tabIdAliases = tabIdAliasesByGroup.get(tab.groupId) ?? new Map<string, string>()
+      tabIdAliasesByGroup.set(tab.groupId, tabIdAliases)
+      tabIdAliases.set(tab.id, existingTabId)
+      return false
+    }
+    editorTabIdByEntity.set(tab.entityId, tab.id)
+    return true
+  })
+  return { tabs: dedupedTabs, tabIdAliasesByGroup }
 }
 
 /**
