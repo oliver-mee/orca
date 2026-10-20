@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 const {
+  allowedRoutePartitionMock,
   bindingStore,
   detectInstalledBrowsersMock,
   getProfileMock,
@@ -11,6 +12,7 @@ const {
   recordClientRouteImportSourceMock,
   selectBrowserProfileMock
 } = vi.hoisted(() => ({
+  allowedRoutePartitionMock: vi.fn(() => false),
   bindingStore: {
     get: vi.fn(() => null as string | null),
     set: vi.fn(() => [] as readonly string[]),
@@ -33,6 +35,9 @@ vi.mock('./browser-cookie-import', () => ({
   importCookiesFromBrowser: importCookiesFromBrowserMock,
   importCookiesFromFile: importCookiesFromFileMock,
   selectBrowserProfile: selectBrowserProfileMock
+}))
+vi.mock('./browser-route-session-runtime', () => ({
+  browserRouteSessionRegistry: { isAllowedPartition: allowedRoutePartitionMock }
 }))
 vi.mock('./browser-route-partition-binding-runtime', () => ({
   currentBrowserRoutePartitionBindingStore: () => bindingStore
@@ -83,6 +88,7 @@ const request = {
 
 beforeEach(() => {
   vi.clearAllMocks()
+  allowedRoutePartitionMock.mockReturnValue(false)
   bindingStore.get.mockReturnValue(null)
   getRouteIdentityMock.mockReturnValue(routeIdentity)
   getProfileMock.mockReturnValue({ id: 'default', partition: 'persist:legacy-server-profile' })
@@ -271,5 +277,34 @@ describe('importCookieFileIntoClientRoutePartition', () => {
     })
     expect(result).toMatchObject({ ok: false, reason: expect.stringContaining('re-paired') })
     expect(recordClientRouteImportSourceMock).not.toHaveBeenCalled()
+  })
+})
+
+describe('host-owned profile import authority', () => {
+  it('imports into an active authorised route when the profile is absent locally', async () => {
+    getProfileMock.mockReturnValue(null)
+    allowedRoutePartitionMock.mockReturnValue(true)
+    importCookiesFromFileMock.mockResolvedValue({ ok: true, summary: { importedCookies: 1 } })
+    const result = await importCookieFileIntoClientRoutePartition(
+      { ...request, browserProfileId: 'server-only' },
+      async () => '/test/cookies.json'
+    )
+    expect(result).toMatchObject({ ok: true, profileId: 'server-only' })
+    const partition = importCookiesFromFileMock.mock.calls[0]?.[1]
+    expect(partition).toMatch(/^persist:orca-browser-v1-[a-f0-9]{64}$/)
+    expect(allowedRoutePartitionMock).toHaveBeenCalledWith(partition)
+  })
+
+  it('rejects an unknown profile without an active authorised route before opening the picker', async () => {
+    getProfileMock.mockReturnValue(null)
+    const choose = vi.fn(async () => '/test/cookies.json')
+    expect(
+      await importCookieFileIntoClientRoutePartition(
+        { ...request, browserProfileId: 'unknown-profile' },
+        choose
+      )
+    ).toMatchObject({ ok: false })
+    expect(choose).not.toHaveBeenCalled()
+    expect(importCookiesFromFileMock).not.toHaveBeenCalled()
   })
 })

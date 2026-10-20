@@ -1,3 +1,4 @@
+import { browserRouteSessionRegistry } from './browser-route-session-runtime'
 import type {
   BrowserSessionProfileSource,
   BrowserCookieImportResult
@@ -88,10 +89,6 @@ async function runClientRouteCookieImport(
   if (!routeIdentity) {
     return null
   }
-  const profile = browserSessionRegistry.getProfile(request.browserProfileId)
-  if (!profile) {
-    return { ok: false, reason: 'Session profile not found.' }
-  }
   const source = resolveSource()
   if ('reason' in source) {
     return source
@@ -152,7 +149,6 @@ function bindRoutePartition(
   routeIdentity: NonNullable<ReturnType<typeof getPairedRuntimeBrowserClientRouteIdentity>>,
   browserProfileId: string
 ): string {
-  browserSessionRegistry.requireRouteBrowserProfile(browserProfileId)
   const bindings = currentBrowserRoutePartitionBindingStore()
   const derived = resolveBrowserRoutePartitionBinding({
     bindings,
@@ -170,6 +166,13 @@ function bindRoutePartition(
     },
     storageScope: routeIdentity.storageScope
   })
+  // An active route already validated the host-owned profile when its guest was prepared.
+  if (!browserRouteSessionRegistry.isAllowedPartition(derived.partition)) {
+    browserSessionRegistry.requireRouteBrowserProfile(browserProfileId)
+    if (!browserSessionRegistry.getProfile(browserProfileId)) {
+      throw new Error('Session profile not found.')
+    }
+  }
   const persisted = bindings.get(derived.partition)
   if (persisted === null) {
     bindings.set(derived.partition, derived.bindingFingerprint, routeIdentity.storageScope)
