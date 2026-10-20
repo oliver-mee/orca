@@ -13,6 +13,7 @@ test('automation editor exposes webhook verification without saving or triggerin
   await orcaPage.getByRole('button', { name: 'New Automation', exact: true }).click()
   const dialog = orcaPage.getByRole('dialog')
   await expect(dialog.getByText('Webhook trigger', { exact: true })).toBeVisible()
+  await dialog.getByText('Webhook trigger', { exact: true }).scrollIntoViewIfNeeded()
   await testInfo.attach('webhook-editor-off', {
     body: await dialog.screenshot({
       animations: 'disabled',
