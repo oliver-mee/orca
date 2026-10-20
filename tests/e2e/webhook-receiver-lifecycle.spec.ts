@@ -65,3 +65,53 @@ test('settings enable, rebind and disable the real webhook receiver', async ({ o
     )
   }
 })
+
+test('webhook settings display the actual receiver state after enabling', async ({
+  orcaPage
+}, testInfo) => {
+  await waitForSessionReady(orcaPage)
+  const port = await unusedPort()
+  await orcaPage.evaluate(async (port) => {
+    const settings = await window.api.settings.set({
+      webhookServer: { enabled: false, port, bindAddress: '127.0.0.1' }
+    })
+    const store = window.__store
+    if (!store) {
+      throw new Error('test store unavailable')
+    }
+    store.setState({ settings })
+    store.getState().openSettingsTarget({ pane: 'advanced', repoId: null })
+    store.getState().openSettingsPage()
+  }, port)
+  const announcement = orcaPage.getByRole('button', { name: 'Maybe Later', exact: true })
+  if (await announcement.isVisible().catch(() => false)) {
+    await announcement.click()
+  }
+  const toggle = orcaPage.getByRole('switch', { name: 'Enable webhook receiver', exact: true })
+  await expect(toggle).toBeVisible()
+  await expect(toggle).toHaveAttribute('aria-checked', 'false')
+  await testInfo.attach('webhook-disabled', {
+    body: await orcaPage.screenshot({
+      animations: 'disabled',
+      path: testInfo.outputPath('webhook-disabled.png')
+    }),
+    contentType: 'image/png'
+  })
+  await toggle.click()
+  await expect(toggle).toHaveAttribute('aria-checked', 'true')
+  await expect
+    .poll(() => orcaPage.evaluate(() => window.api.automations.getWebhookEndpoint()))
+    .toMatchObject({ running: true, port })
+  await expect(orcaPage.getByText(`Listening on 127.0.0.1:${port}.`, { exact: true })).toBeVisible()
+  await testInfo.attach('webhook-enabled', {
+    body: await orcaPage.screenshot({
+      animations: 'disabled',
+      path: testInfo.outputPath('webhook-enabled.png')
+    }),
+    contentType: 'image/png'
+  })
+  await toggle.click()
+  await expect
+    .poll(() => orcaPage.evaluate(() => window.api.automations.getWebhookEndpoint()))
+    .toMatchObject({ running: false })
+})
