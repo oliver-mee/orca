@@ -2,6 +2,8 @@ import { parseExecutionHostId, type ExecutionHostId } from '../../../shared/exec
 import { FLOATING_TERMINAL_WORKTREE_ID } from '../../../shared/constants'
 import { parseWorkspaceKey } from '../../../shared/workspace-scope'
 import type { AppState } from '@/store/types'
+import { runtimeTargetForOwnerEnvironment } from '@/runtime/runtime-client-target'
+import type { RuntimeClientTarget } from '../../../shared/runtime-client-target'
 import { findFolderWorkspaceOwner } from './folder-workspace-runtime-owner'
 import {
   assertWorktreeOperationGenerationSnapshotCurrent,
@@ -9,11 +11,11 @@ import {
   type WorktreeOperationGenerationSnapshot
 } from './worktree-operation-generation'
 import {
-  resolveExplicitWorktreeOperationRouteResult,
+  getFloatingWorkspaceOperationRoute,
   resolveWorktreeOperationRoute,
-  settingsForWorktreeOperationRoute,
   type WorktreeOperationRoute
 } from './worktree-operation-route'
+import { resolveExplicitWorktreeOperationRouteResult } from './worktree-operation-catalog-route'
 
 export type EditorFileOperationProvenance = {
   generation: WorktreeOperationGenerationSnapshot
@@ -56,20 +58,19 @@ export function captureEditorFileOperationProvenance(
       : 'legacy'
   const hintedRuntimeEnvironmentId = ownerHint?.trim() || null
   const route =
-    worktreeId === FLOATING_TERMINAL_WORKTREE_ID
-      ? { executionHostId: 'local' as const, runtimeEnvironmentId: null }
-      : explicitResolution.kind === 'resolved'
-        ? explicitResolution.route
-        : explicitResolution.kind === 'ambiguous'
-          ? null
-          : ownerHintProvided && worktreeIsPublished
-            ? {
-                executionHostId: hintedRuntimeEnvironmentId
-                  ? (`runtime:${encodeURIComponent(hintedRuntimeEnvironmentId)}` as const)
-                  : ('local' as const),
-                runtimeEnvironmentId: hintedRuntimeEnvironmentId
-              }
-            : resolveEditorOwnerRoute(state, worktreeId)
+    getFloatingWorkspaceOperationRoute(worktreeId) ??
+    (explicitResolution.kind === 'resolved'
+      ? explicitResolution.route
+      : explicitResolution.kind === 'ambiguous'
+        ? null
+        : ownerHintProvided && worktreeIsPublished
+          ? {
+              executionHostId: hintedRuntimeEnvironmentId
+                ? (`runtime:${encodeURIComponent(hintedRuntimeEnvironmentId)}` as const)
+                : ('local' as const),
+              runtimeEnvironmentId: hintedRuntimeEnvironmentId
+            }
+          : resolveEditorOwnerRoute(state, worktreeId))
   if (!route || (ownerHintProvided && (ownerHint?.trim() || null) !== route.runtimeEnvironmentId)) {
     throw new Error(OWNER_CHANGED_MESSAGE)
   }
@@ -128,8 +129,9 @@ function resolveCurrentEditorRoute(
   worktreeId: string,
   provenance: EditorFileOperationProvenance
 ): WorktreeOperationRoute | null {
-  if (worktreeId === FLOATING_TERMINAL_WORKTREE_ID) {
-    return { executionHostId: 'local', runtimeEnvironmentId: null }
+  const floatingRoute = getFloatingWorkspaceOperationRoute(worktreeId)
+  if (floatingRoute) {
+    return floatingRoute
   }
   const explicitResolution = resolveExplicitWorktreeOperationRouteResult(state, worktreeId)
   if (explicitResolution.kind === 'resolved') {
@@ -167,7 +169,7 @@ export function getEditorFileOperationContext(
   },
   worktreePath: string | null
 ): {
-  settings: AppState['settings']
+  target: RuntimeClientTarget
   worktreeId: string
   worktreePath: string | null
   connectionId?: string
@@ -212,7 +214,7 @@ export function getEditorFileOperationContext(
     throw new Error(OWNER_CHANGED_MESSAGE)
   }
   return {
-    settings: settingsForWorktreeOperationRoute(state.settings, route),
+    target: runtimeTargetForOwnerEnvironment(route.runtimeEnvironmentId),
     worktreeId: file.worktreeId,
     worktreePath: resolvedWorktreePath,
     expectedExecutionHostId: host.kind === 'ssh' ? host.id : 'local',

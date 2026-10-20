@@ -12,10 +12,7 @@ import type {
   AgentLaunchTabPublishRequest
 } from '../../../shared/agent-launch-tab-publication'
 import { folderWorkspaceToWorktree } from '../../../shared/folder-workspace-worktree'
-import {
-  activateTerminalInitiatedWorktree,
-  focusTerminalInitiatedTab
-} from '../hooks/ipc-events/terminal-command-state'
+import { presentAgentLaunchTab } from './agent-launch-tab-presentation'
 import { useAppStore } from '../store'
 import { resolveUnifiedTabCreatePlacement } from '../store/slices/tabs/tabs-create-placement'
 import { insertUnifiedTabAfterAnchor } from './unified-tab-anchor-insertion'
@@ -106,11 +103,6 @@ export function publishAgentLaunchTab(
   if (request.prompt) {
     rememberAgentLaunchPanePrompt(tabId, request.prompt)
   }
-  if (tab.id !== tabId) {
-    // createTab mints a fresh id on a collision it saw and we did not; that tab would never attach.
-    useAppStore.getState().closeTab(tab.id, { recordInteraction: false })
-    throw new Error('agent_launch_tab_id_taken')
-  }
   if (placement.anchorTabId) {
     const unifiedTabId = useAppStore
       .getState()
@@ -119,25 +111,7 @@ export function publishAgentLaunchTab(
       insertUnifiedTabAfterAnchor(worktreeId, unifiedTabId, placement.anchorTabId)
     }
   }
-  if (request.viewer === 'focus-window') {
-    // After the tab lands: activating prunes the workspace's empty groups, the requested split too.
-    activateTerminalInitiatedWorktree(useAppStore.getState(), worktreeId, [tab.id])
-  }
-  const current = useAppStore.getState()
-  // The desktop's own launch stays in its workspace: the window follows only if it is still there.
-  const windowShowsTab =
-    request.viewer === 'focus-window' ||
-    (request.viewer === 'focus-in-workspace' && current.activeWorktreeId === worktreeId)
-  if (windowShowsTab) {
-    current.setActiveTabType('terminal', worktreeId)
-    current.setActiveTab(tab.id)
-  }
-  if (windowShowsTab || request.viewer === 'reveal-owner') {
-    if (request.viewer !== 'focus-in-workspace') {
-      current.revealWorktreeInSidebar(worktreeId)
-    }
-    focusTerminalInitiatedTab(tab.id, leafId, worktreeId)
-  }
+  presentAgentLaunchTab(request.viewer, worktreeId, tab.id, leafId)
   const landed = landedGroupId(worktreeId, tab.id) ?? placement.groupId ?? ''
   const fallback = placementFallback(request, landed, placement.anchorTabId !== undefined)
   return {

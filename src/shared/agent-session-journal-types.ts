@@ -1,3 +1,4 @@
+import type { AgentSessionProviderContextBoundary } from './agent-session-provider-context'
 // ─── Canonical agent-session journal: cross-process wire shapes ─────────────
 // The host-owned timeline for a structured agent session. Everything here must
 // be plain JSON: rows are persisted verbatim and later republished to clients,
@@ -18,6 +19,7 @@ import type { AgentSessionContextUsage } from './agent-session-context-usage'
 import type { AgentSessionProviderHandle } from './agent-session-provider-handle'
 import type { NativeChatBlock, NativeChatRole } from './native-chat-types'
 import type { AgentMessageSource } from './agent-session-message-source'
+import type { AgentSessionExecutionOptions } from './agent-session-execution-options'
 
 export { type AgentType }
 
@@ -180,6 +182,13 @@ export type AgentJournalPromptOption = {
   description?: string
 }
 
+export type AgentJournalFreeTextInput = {
+  allowEmpty?: boolean
+  multiline?: boolean
+  initialValue?: string
+  placeholder?: string
+}
+
 export type AgentJournalQuestion = {
   id: string
   question: string
@@ -188,6 +197,7 @@ export type AgentJournalQuestion = {
   options: AgentJournalPromptOption[]
   /** Present when the provider accepts an answer outside the offered options. */
   freeTextQuestionId?: string
+  freeTextInput?: AgentJournalFreeTextInput
 }
 
 export type AgentJournalApprovalMatchedAskRule = {
@@ -236,6 +246,7 @@ export type AgentJournalQuestionItem = {
   questions?: AgentJournalQuestion[]
   /** Present when the provider accepts an answer outside the offered options. */
   freeTextQuestionId?: string
+  freeTextInput?: AgentJournalFreeTextInput
   resolution: AgentJournalResolution
 }
 
@@ -312,6 +323,7 @@ type AgentJournalStatusItemFields = {
   kind: 'status'
   /** Optional display hints; unknown values retain the ordinary text fallback. */
   presentation?: string
+  contextClear?: AgentSessionProviderContextBoundary
   tone?: string
   /** Legacy carrier of a turn record: written by hosts before v3, and published
    *  to clients that predate the `turn` item. New code reads turns through
@@ -326,6 +338,9 @@ type AgentJournalStatusItemFields = {
   }
   /** Present on thread-goal transitions; absent on rows from older hosts. */
   threadGoal?: AgentJournalThreadGoalState
+  /** On the row about a reply Orca's own stop cut off: why Orca stopped. Its cause is open (a newer
+   *  host may name one this build does not know), so read it with `readAgentSessionOrcaStop`. */
+  orcaStop?: { cause: string }
 }
 
 /** A status row that reports no failure; its text is its writer's own. */
@@ -503,6 +518,9 @@ export type AgentJournalSubmission = {
    *  card, so no surface draws this send, before or after the card is sent, edited or deleted.
    *  Recorded in the rejection's own transaction (`journal-unsent-send-hold.ts`). */
   keptAsQueuedMessageId?: string
+  /** Immutable choices captured on acceptance and applied when the agent is handed the message;
+   *  absent on older submissions. The host's alone: clients ignore it. */
+  options?: AgentSessionExecutionOptions
 }
 
 /** Durable answer to "did my send land?", keyed by client message id. Only an

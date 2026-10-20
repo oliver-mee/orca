@@ -5,6 +5,7 @@ import React, { createRef, type ReactNode } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import type * as I18n from '@/i18n/i18n'
 import type * as ImageBlobPng from '@/lib/image-blob-png'
 import { CLIPBOARD_IMAGE_MAX_SOURCE_BYTES } from '../../../../shared/clipboard-image'
 import {
@@ -36,26 +37,14 @@ vi.mock('@/components/ui/dropdown-menu', () => ({
   DropdownMenuTrigger: ({ children }: { children?: ReactNode }) => children
 }))
 
-vi.mock('lucide-react', () => {
+vi.mock('lucide-react', async (importOriginal) => {
   const Icon = () => null
-  return {
-    Clipboard: Icon,
-    Copy: Icon,
-    GitFork: Icon,
-    Image: Icon,
-    Maximize2: Icon,
-    MessageSquarePlus: Icon,
-    Minimize2: Icon,
-    PanelBottomClose: Icon,
-    PanelsTopLeft: Icon,
-    PanelRightClose: Icon,
-    Pencil: Icon,
-    SquareTerminal: Icon,
-    X: Icon
-  }
+  const icons = await importOriginal<Record<string, unknown>>()
+  return Object.fromEntries(Object.keys(icons).map((name) => [name, Icon]))
 })
 
-vi.mock('@/i18n/i18n', () => ({
+vi.mock('@/i18n/i18n', async (importOriginal) => ({
+  ...(await importOriginal<typeof I18n>()),
   translate: (_key: string, fallback: string) => fallback
 }))
 
@@ -79,6 +68,8 @@ vi.mock('@/lib/image-blob-png', async (importOriginal) => ({
   convertImageBlobToPng: imageCopy.convertImageBlobToPng
 }))
 
+vi.mock('./NativeChatSelectionQuote', () => ({ NativeChatSelectionQuote: () => null }))
+
 vi.mock('@/components/tab-bar/TabWorkspaceLayoutMenuSection', () => ({
   TabWorkspaceLayoutMenuSection: () => 'Move Tab to Split'
 }))
@@ -99,18 +90,16 @@ function childrenText(children: ReactNode): string {
 function Harness({
   onSwitchToTerminal,
   structured = false,
-  enabled = true,
   orcaSessionId
 }: {
   onSwitchToTerminal?: () => void
   structured?: boolean
-  enabled?: boolean
   orcaSessionId?: string
 }) {
   const rootRef = createRef<HTMLDivElement>()
   const { menu } = useNativeChatContextMenu({
     rootRef,
-    enabled,
+    composerRef: createRef(),
     onSwitchToTerminal,
     showTerminalPaneActions: !structured,
     workspaceLayout: structured ? { unifiedTabId: 'chat-tab', groupId: 'group-1' } : undefined,
@@ -131,17 +120,23 @@ function ImageHarness({
   src?: string
 }) {
   const rootRef = createRef<HTMLDivElement>()
-  const { menu, onContextMenuCapture } = useNativeChatContextMenu({
+  const { menu, onContextMenuCapture, onPointerDownCapture } = useNativeChatContextMenu({
     rootRef,
+    composerRef: createRef(),
     enabled,
     actions: { ...emptyNativeChatContextMenuActions, onPaste: vi.fn() }
   })
   return (
-    <div ref={rootRef} onContextMenuCapture={onContextMenuCapture}>
+    <div
+      ref={rootRef}
+      onContextMenuCapture={onContextMenuCapture}
+      onPointerDownCapture={onPointerDownCapture}
+    >
       <button type="button" data-native-chat-copy-image-src={src}>
         <img alt="shot" src="data:thumbnail" />
       </button>
       <p>text</p>
+      <textarea aria-label="composer" />
       {menu}
     </div>
   )
@@ -149,6 +144,16 @@ function ImageHarness({
 
 function copyImageItem(): ItemProps | undefined {
   return items.list.findLast((candidate) => childrenText(candidate.children) === 'Copy image')
+}
+
+function copyTextItem(): ItemProps | undefined {
+  return items.list.findLast((candidate) =>
+    /^Copy(⌘C|Ctrl\+C)$/.test(childrenText(candidate.children))
+  )
+}
+
+function pasteItem(): ItemProps | undefined {
+  return items.list.findLast((candidate) => childrenText(candidate.children) === 'Paste')
 }
 
 function stubClipboardImageWrite(): ReturnType<typeof vi.fn> {
@@ -210,6 +215,50 @@ describe('useNativeChatContextMenu', () => {
     expect(toasts.success).toHaveBeenCalledWith('Image copied')
     expect(toasts.error).not.toHaveBeenCalled()
   })
+
+  it('offers no Copy when no chat text is selected', () => {
+    render(<ImageHarness />)
+    fireEvent.contextMenu(screen.getByText('text'))
+
+    expect(copyTextItem()).toBeUndefined()
+  })
+
+  it('offers Paste in a text field but not on the transcript', () => {
+    render(<ImageHarness />)
+    fireEvent.contextMenu(screen.getByText('text'))
+    expect(pasteItem()).toBeUndefined()
+
+    fireEvent.contextMenu(screen.getByRole('textbox', { name: 'composer' }))
+    expect(pasteItem()).toBeDefined()
+  })
+
+  it('copies the selected chat text', () => {
+    const writeClipboardText = vi.fn().mockResolvedValue(undefined)
+    vi.stubGlobal('api', { ui: { writeClipboardText } })
+    render(<ImageHarness />)
+    window.getSelection()?.selectAllChildren(screen.getByText('text'))
+    fireEvent.contextMenu(screen.getByText('text'))
+
+    copyTextItem()?.onSelect?.()
+
+    expect(writeClipboardText).toHaveBeenCalledWith('text')
+  })
+
+  it.each([
+    ['a right press', 'Macintosh', { button: 2 }, false],
+    ['a Mac ctrl-click', 'Macintosh', { button: 0, ctrlKey: true }, false],
+    ['a left press', 'Macintosh', { button: 0 }, true],
+    ['a ctrl-click off Mac', 'Windows', { button: 0, ctrlKey: true }, true]
+  ])(
+    'keeps the selection through %s only when it opens the menu',
+    (_press, userAgent, init, defaultRuns) => {
+      vi.spyOn(navigator, 'userAgent', 'get').mockReturnValue(userAgent)
+      render(<ImageHarness />)
+
+      // fireEvent returns false when the handler prevented the default.
+      expect(fireEvent.pointerDown(screen.getByText('text'), init)).toBe(defaultRuns)
+    }
+  )
 
   it('offers no image copy when the right-click is not on an image', () => {
     render(<ImageHarness />)
@@ -336,9 +385,9 @@ describe('useNativeChatContextMenu', () => {
     // Keep the assertions tied to the mocked menu item's semantic children.
     const labels = items.list.map((candidate) => childrenText(candidate.children))
 
-    expect(labels.some((label) => label.startsWith('Switch to terminal view'))).toBe(true)
+    expect(labels.some((label) => label.startsWith('Switch to Terminal'))).toBe(true)
     const item = items.list.find((candidate) =>
-      childrenText(candidate.children).startsWith('Switch to terminal view')
+      childrenText(candidate.children).startsWith('Switch to Terminal')
     )
     expect(item).toBeDefined()
     item?.onSelect?.()
@@ -349,7 +398,7 @@ describe('useNativeChatContextMenu', () => {
     renderToStaticMarkup(<Harness />)
 
     expect(
-      items.list.some((candidate) => childrenText(candidate.children) === 'Switch to terminal view')
+      items.list.some((candidate) => childrenText(candidate.children) === 'Switch to Terminal')
     ).toBe(false)
   })
 
@@ -359,25 +408,6 @@ describe('useNativeChatContextMenu', () => {
     expect(markup).toContain('Move Tab to Split')
     expect(markup).not.toContain('Split Terminal Right')
     expect(markup).not.toContain('Fork Agent Session')
-  })
-
-  it('subscribes to selection changes only while its retained chat is visible', () => {
-    const getSelection = vi.spyOn(window, 'getSelection').mockReturnValue(null)
-    const view = render(<Harness enabled={false} />)
-
-    getSelection.mockClear()
-    document.dispatchEvent(new Event('selectionchange'))
-    expect(getSelection).not.toHaveBeenCalled()
-
-    view.rerender(<Harness enabled />)
-    getSelection.mockClear()
-    document.dispatchEvent(new Event('selectionchange'))
-    expect(getSelection).toHaveBeenCalledOnce()
-
-    view.rerender(<Harness enabled={false} />)
-    getSelection.mockClear()
-    document.dispatchEvent(new Event('selectionchange'))
-    expect(getSelection).not.toHaveBeenCalled()
   })
 
   describe('Copy Orca Session ID', () => {

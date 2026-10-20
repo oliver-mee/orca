@@ -1,7 +1,7 @@
 // Local actions reveal this pane at the press. Resume reveals once the host lifts the pause;
 // host delivery, queued drafts and Stop never move the reader.
 
-import { useCallback, useEffect, useMemo, useRef } from 'react'
+import { useCallback, useMemo } from 'react'
 import {
   useNativeChatRevealLatest,
   type NativeChatMessageListHandle
@@ -12,36 +12,28 @@ import type { StructuredAgentSessionQueuedMessagesController } from './use-struc
 type StructuredController = ReturnType<typeof useStructuredAgentSession>
 
 export function useStructuredNativeChatSubmitReveal(
-  controller: Pick<StructuredController, 'respond' | 'retry' | 'queuedMessages'>,
-  /** Relaunches a start that failed; the messages parked behind it go out on publish. */
-  retryLaunch: () => void
+  controller: Pick<StructuredController, 'respond' | 'queuedMessages'>,
+  /** Relaunches a start that failed. */
+  retryLaunch: () => void,
+  /** The host may take no turn: no card is sent now or resumed, and no failed start retried. */
+  startsHeld = false
 ): {
   messageListRef: React.RefObject<NativeChatMessageListHandle | null>
   /** For the composer, which reveals as it sends. */
   revealLatest: () => void
-  retryDelivery: (clientMessageId: string) => void
   retryLaunch: () => void
   respond: StructuredController['respond']
   queuedMessages: StructuredAgentSessionQueuedMessagesController
 } {
   const { messageListRef, revealLatest } = useNativeChatRevealLatest()
   const { respond, queuedMessages } = controller
-  // Read at click time, so the notices stay put while the outbox's Retry is rebuilt each render.
-  const retryRef = useRef(controller.retry)
-  useEffect(() => {
-    retryRef.current = controller.retry
-  })
-  const retryDelivery = useCallback(
-    (clientMessageId: string) => {
-      revealLatest()
-      retryRef.current(clientMessageId)
-    },
-    [revealLatest]
-  )
   const revealingRetryLaunch = useCallback(() => {
+    if (startsHeld) {
+      return
+    }
     revealLatest()
     retryLaunch()
-  }, [retryLaunch, revealLatest])
+  }, [retryLaunch, revealLatest, startsHeld])
   const revealingRespond = useCallback<StructuredController['respond']>(
     (...args) => {
       revealLatest()
@@ -58,7 +50,14 @@ export function useStructuredNativeChatSubmitReveal(
       }
       return resumed
     }
-    const { queueResume } = queuedMessages
+    if (startsHeld) {
+      return {
+        ...queuedMessages,
+        steer: async () => undefined,
+        resume: async () => false,
+        steerNewest: () => false
+      }
+    }
     return {
       ...queuedMessages,
       steer: (messageId) => {
@@ -66,8 +65,6 @@ export function useStructuredNativeChatSubmitReveal(
         return queuedMessages.steer(messageId)
       },
       resume: revealing(queuedMessages.resume),
-      // The composer's Resume is the same press.
-      queueResume: queueResume && { ...queueResume, resume: revealing(queueResume.resume) },
       steerNewest: () => {
         const steered = queuedMessages.steerNewest()
         if (steered) {
@@ -76,11 +73,10 @@ export function useStructuredNativeChatSubmitReveal(
         return steered
       }
     }
-  }, [queuedMessages, revealLatest])
+  }, [queuedMessages, revealLatest, startsHeld])
   return {
     messageListRef,
     revealLatest,
-    retryDelivery,
     retryLaunch: revealingRetryLaunch,
     respond: revealingRespond,
     queuedMessages: revealingQueue

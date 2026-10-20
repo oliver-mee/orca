@@ -7,6 +7,7 @@ import { parseExecutionHostId } from '../../../shared/execution-host'
 import { STRUCTURED_AGENT_SESSION_REGISTERED_AGENTS_RUNTIME_CAPABILITY } from '../../../shared/protocol-version'
 import { lastVerifiedRuntimeStatus } from '../../../shared/runtime-host-status'
 import type { RuntimeEnvironmentStatus } from '../../../shared/runtime-host-status'
+import { ensureLocalRuntimeCapabilities } from './local-runtime-capabilities'
 import { callRuntimeRpc } from './runtime-rpc-client'
 
 /**
@@ -29,10 +30,19 @@ export type HostStructuredAgentsStatuses = ReadonlyMap<string, RuntimeEnvironmen
 
 const entries = new Map<string, HostAgentsEntry>()
 const inflight = new Map<string, Promise<void>>()
+/** Host runtimes whose last read failed, keyed like `inflight`: unlearned but not loading. */
+const failed = new Set<string>()
 const listeners = new Set<() => void>()
+let version = 0
 
 function publish(): void {
+  version += 1
   listeners.forEach((listener) => listener())
+}
+
+/** Changes whenever any host's list does; a React snapshot for `subscribeHostStructuredAgents`. */
+export function hostStructuredAgentsVersion(): number {
+  return version
 }
 
 /** The runtime instance a host's list must come from: null locally, undefined when unknown. */
@@ -61,6 +71,14 @@ export function readHostStructuredAgentsForRuntime(
     : undefined
 }
 
+/** Whether the given runtime's last agents read failed, as opposed to not having answered yet. */
+export function hostStructuredAgentsReadFailed(
+  executionHostId: string,
+  runtimeId: string | null
+): boolean {
+  return failed.has(hostRuntimeKey(executionHostId, runtimeId))
+}
+
 /** The agents this host listed, or undefined when none were learned from its current runtime. */
 export function readHostStructuredAgents(
   executionHostId: string,
@@ -87,7 +105,7 @@ export function loadHostStructuredAgents(
   ) {
     return Promise.resolve()
   }
-  const key = `${executionHostId}\u0000${runtimeId ?? ''}`
+  const key = hostRuntimeKey(executionHostId, runtimeId)
   const pending = inflight.get(key)
   if (pending) {
     return pending
@@ -102,19 +120,42 @@ export function loadHostStructuredAgents(
   )
     .then((result) => {
       const agents = decodeAgentSessionAgentsResult(result)
-      if (agents) {
-        entries.set(executionHostId, { runtimeId, agents })
-        publish()
+      if (!agents) {
+        throw new Error('Invalid registered-agent response')
       }
+      failed.delete(key)
+      entries.set(executionHostId, { runtimeId, agents })
+      publish()
     })
     .catch((error: unknown) => {
       console.warn('[native-chat] could not read the host structured agents', error)
+      failed.add(key)
+      publish()
     })
     .finally(() => {
       inflight.delete(key)
     })
   inflight.set(key, read)
   return read
+}
+
+/** Asks a host again when a launch found its agents unlearned. The startup read runs once per
+ *  runtime, so without this a read that failed, or was skipped while the local runtime's
+ *  capabilities were unknown, kept that host's agents off the chat route for the whole session. */
+export async function relearnHostStructuredAgents(
+  executionHostId: string,
+  hostCapabilities: readonly string[] | null | undefined,
+  statuses: HostStructuredAgentsStatuses
+): Promise<void> {
+  const runtimeId = currentRuntimeId(executionHostId, statuses)
+  if (runtimeId === undefined || readHostStructuredAgentsForRuntime(executionHostId, runtimeId)) {
+    return
+  }
+  const capabilities =
+    runtimeId === null && !hostCapabilities
+      ? await ensureLocalRuntimeCapabilities()
+      : hostCapabilities
+  await loadHostStructuredAgents(executionHostId, capabilities, runtimeId)
 }
 
 /** Drops hosts no longer paired; a stale runtime is already ignored by the reader. */
@@ -138,8 +179,13 @@ export function subscribeHostStructuredAgents(listener: () => void): () => void 
   }
 }
 
+function hostRuntimeKey(executionHostId: string, runtimeId: string | null): string {
+  return `${executionHostId}\u0000${runtimeId ?? ''}`
+}
+
 export function resetHostStructuredAgentsForTests(): void {
   entries.clear()
   inflight.clear()
+  failed.clear()
   publish()
 }

@@ -62,3 +62,29 @@ describe('a launch tab while its agent is starting', () => {
     )
   })
 })
+
+describe('a tab this window already shows, which the host reveals an agent into', () => {
+  it('takes the agent under its own id, never a second tab', async () => {
+    const scenario = await setupTerminalCreateSurfacing(() => false)
+    const { createTab, updateTabPtyId, createTerminalListenerRef, storeState } = scenario
+    if (!createTerminalListenerRef.current) {
+      throw new Error('Expected the create-terminal listener to be registered')
+    }
+    Object.assign(window.api, { pty: { kill: vi.fn(async () => {}) } })
+    storeState.tabsByWorktree['wt-1'] = [
+      { id: 'tab-made', ptyId: null, agentLaunchPane: { leafId: LEAF } }
+    ]
+    storeState.terminalLayoutsByTabId['tab-made'] = { root: { type: 'leaf', leafId: LEAF } }
+
+    createTerminalListenerRef.current({
+      requestId: 'reveal-window-made-launch-tab',
+      worktreeId: 'wt-1',
+      ptyId: 'pty-agent',
+      tabId: 'tab-made',
+      leafId: LEAF
+    })
+
+    expect(createTab).not.toHaveBeenCalled()
+    expect(updateTabPtyId).toHaveBeenCalledWith('tab-made', 'pty-agent')
+  })
+})

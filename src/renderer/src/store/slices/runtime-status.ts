@@ -1,6 +1,8 @@
-import type { StateCreator } from 'zustand'
-import type { AppState } from '../types'
-import type { RuntimeStatusSlice } from './runtime-status-types'
+import type {
+  RuntimeStatusSlice,
+  RuntimeStatusStoreSetState,
+  RuntimeStatusStoreState
+} from './runtime-status-types'
 export type { RuntimeEnvironmentStatus, RuntimeStatusSlice } from './runtime-status-types'
 import { lastVerifiedRuntimeStatus } from '../../../../shared/runtime-host-status'
 import { runtimeEnvironmentStatusesEqual } from './runtime-environment-status-equality'
@@ -15,16 +17,25 @@ import {
   dismissRuntimeDisconnectedToast,
   showRuntimeDisconnectedToast
 } from './runtime-environment-disconnect-toast'
-import { reconcileCatalogRows } from './repo-identity-reconcile'
+import { reconcileCatalogRows } from '../../../../shared/catalog-row-reconcile'
 import { createRuntimeStatusHydration } from './runtime-status-hydration'
 import { refreshRuntimeEnvironmentStatus } from './runtime-status-refresh'
 import * as runtimeStatusConnectionGeneration from './runtime-status-connection-generation'
 import { replayClientHostedBrowserCloseIntents } from '@/runtime/client-hosted-browser-close-intent-replay'
 import {
+  pairedTerminalTabCloseIntentStoreOf,
+  reconcileWebSessionCloseReplaysWithCatalog
+} from '@/runtime/web-session-close-replay'
+import {
   ensureBrowserClientHostOnRuntimeContact,
   ensureBrowserClientHostsForRestoredPages
 } from '@/runtime/restored-client-hosted-browser-host-attach'
-import { applyRuntimeHostStatusSnapshot } from './runtime-status-snapshot'
+import { applyRuntimeHostStatusSnapshot, snapshotOutrunsCatalog } from './runtime-status-snapshot'
+import { refreshRuntimeEnvironmentCatalog } from '@/runtime/runtime-environment-pairing-refresh'
+import {
+  classifyPeerReplacements,
+  replacedRuntimeEnvironmentIds
+} from './runtime-environment-peer-replacement'
 
 export const clearRuntimeEnvironmentConnectionGenerationsForTests = (): void => {
   runtimeStatusConnectionGeneration.clearRuntimeEnvironmentConnectionGenerations()
@@ -35,10 +46,11 @@ export {
   setRuntimeEnvironmentConnectionGenerationForTests
 } from './runtime-status-connection-generation'
 
-export const createRuntimeStatusSlice: StateCreator<AppState, [], [], RuntimeStatusSlice> = (
-  set,
-  get
-) => ({
+export const createRuntimeStatusSlice: (
+  set: RuntimeStatusStoreSetState,
+  get: () => RuntimeStatusStoreState,
+  store?: unknown
+) => RuntimeStatusSlice = (set, get) => ({
   runtimeEnvironments: [],
   runtimeEnvironmentCatalogHydrated: false,
   runtimeEnvironmentCatalogSettled: false,
@@ -55,22 +67,16 @@ export const createRuntimeStatusSlice: StateCreator<AppState, [], [], RuntimeSta
   },
 
   setRuntimeEnvironments: (environments) => {
-    const previousRevisionById = new Map(
-      get().runtimeEnvironments.map((environment) => [
-        environment.id,
-        environment.pairingRevision ?? environment.createdAt
-      ])
+    const previousEnvironments = get().runtimeEnvironments
+    const replacedEnvironmentIds = replacedRuntimeEnvironmentIds(previousEnvironments, environments)
+    const peerReplacement = classifyPeerReplacements(
+      previousEnvironments,
+      environments,
+      replacedEnvironmentIds
     )
-    const replacedEnvironmentIds = environments
-      .filter((environment) => {
-        const previousRevision = previousRevisionById.get(environment.id)
-        return (
-          previousRevision !== undefined &&
-          previousRevision !== (environment.pairingRevision ?? environment.createdAt)
-        )
-      })
-      .map((environment) => environment.id)
-    replaceRuntimeEnvironmentRevisions(environments)
+    // Why classified first: transports may follow only a same-host rotation; a replaced peer's
+    // transports are fenced before its new revision is published.
+    replaceRuntimeEnvironmentRevisions(environments, peerReplacement)
     // Why: diff against the accumulated in-memory saved list (not a second disk
     // read) so a main-initiated removal that never calls setRuntimeEnvironments
     // still enters the diff on the next list read. #8881.
@@ -146,26 +152,39 @@ export const createRuntimeStatusSlice: StateCreator<AppState, [], [], RuntimeSta
     get().retainEnvironmentSshState?.(environments.map((environment) => environment.id))
     for (const id of replacedEnvironmentIds) {
       clearRuntimeCompatibilityCache(id)
+      get().clearRuntimeDetectedAgents?.(id)
       get().markEnvironmentSshStateStale?.(id)
     }
-    // Why: same-id re-pair publications belong to the retired peer just as surely as removed ids.
-    const retiredEnvironmentIds = [...new Set([...removedIds, ...replacedEnvironmentIds])]
+    // Why: a same-id re-pair to another peer retires it as surely as a removal.
+    const retiredEnvironmentIds = [...new Set([...removedIds, ...peerReplacement.retired])]
     if (retiredEnvironmentIds.length > 0) {
       evictInstalledAgentSkillDiscoveryForRuntimeEnvironments(retiredEnvironmentIds)
       get().purgeStaleRuntimeHostState?.(retiredEnvironmentIds)
       retiredEnvironmentIds.forEach(dismissRuntimeDisconnectedToast)
     }
+    reconcileWebSessionCloseReplaysWithCatalog(pairedTerminalTabCloseIntentStoreOf(get), {
+      listed: nextIds,
+      ...peerReplacement
+    })
   },
 
-  applyRuntimeHostStatusSnapshot: (snapshot) =>
-    applyRuntimeHostStatusSnapshot(snapshot, get(), (entry) => {
-      set((s) => ({
-        runtimeStatusByEnvironmentId: new Map(s.runtimeStatusByEnvironmentId).set(
-          snapshot.environmentId,
-          entry
-        )
-      }))
-    }),
+  applyRuntimeHostStatusSnapshot: (snapshot) => {
+    const apply = (): void =>
+      applyRuntimeHostStatusSnapshot(snapshot, get(), (entry) => {
+        set((s) => ({
+          runtimeStatusByEnvironmentId: new Map(s.runtimeStatusByEnvironmentId).set(
+            snapshot.environmentId,
+            entry
+          )
+        }))
+      })
+    if (snapshotOutrunsCatalog(snapshot, get())) {
+      // Applied once after the re-read; a catalog that is still behind drops it as before.
+      void refreshRuntimeEnvironmentCatalog().then(apply)
+      return
+    }
+    apply()
+  },
 
   setRuntimeEnvironmentStatus: (environmentId, status, options) => {
     const previous = get().runtimeStatusByEnvironmentId.get(environmentId)

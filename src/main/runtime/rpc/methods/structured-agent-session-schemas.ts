@@ -6,6 +6,7 @@ export {
   AcknowledgeAttentionParams,
   AgentsParams,
   AttachParams,
+  AvailabilityParams,
   CancelParams,
   ConversationCommandParams,
   CreateIntentParams,
@@ -26,6 +27,7 @@ export {
   RestartResumeParams,
   RewindParams,
   SendParams,
+  SleepWorkspaceParams,
   SessionId,
   SetOptionParams,
   SubscribeParams,
@@ -33,3 +35,8 @@ export {
   ThreadGoalParams,
   UnsubscribeParams
 } from '../../../../shared/rpc-contract/structured-agent-session-params'
+export { ContinueInterruptedParams } from '../../../../shared/rpc-contract/structured-agent-session-continue-params'
+export {
+  QueuedMessageUpdateParams,
+  QueuedMessageEditHoldParams
+} from '../../../../shared/rpc-contract/structured-agent-session-queued-edit-params'

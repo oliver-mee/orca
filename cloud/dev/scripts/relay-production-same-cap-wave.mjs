@@ -13,6 +13,7 @@ export const SAME_CAP_CELLS = [
   'production-gce-c23', 'production-gce-c24', 'production-gce-c25', 'production-gce-c26',
   'production-gce-c27', 'production-gce-c28', 'production-gce-c29', 'production-gce-c30',
   'production-gce-c31', 'production-gce-c32', 'production-gce-c33', 'production-gce-c34',
+  'production-gce-c35',
   ...SAME_CAP_MIGRATION_ONLY_CELLS
 ]
 
@@ -25,7 +26,8 @@ export function selectorWaveDelta(cellId) {
 // The cell spreads its drain sends evenly over this window (host-session-registry.ts drain), so
 // it sets the re-placement arrival rate: hosts / window. A closed set, stepped down one rung at a
 // time per cloud/docs/relay-workflows.md; the first entry is the default every wave used before.
-export const SAME_CAP_DRAIN_PACE_WINDOWS_MS = [300_000, 60_000, 30_000]
+// The slower windows are for cells whose 300 s drain browned out the database (c28, 10-07).
+export const SAME_CAP_DRAIN_PACE_WINDOWS_MS = [300_000, 60_000, 30_000, 900_000, 1_200_000]
 export const DEFAULT_SAME_CAP_DRAIN_PACE_WINDOW_MS = SAME_CAP_DRAIN_PACE_WINDOWS_MS[0]
 
 // Only US general cells may drain faster than the default. An Asia drain is bounded by its
@@ -46,7 +48,7 @@ export function drainPaceWindowMs(value, cellIds) {
       `drain pace window must be one of ${SAME_CAP_DRAIN_PACE_WINDOWS_MS.join(', ')} ms`
     )
   }
-  if (parsed !== DEFAULT_SAME_CAP_DRAIN_PACE_WINDOW_MS) {
+  if (parsed < DEFAULT_SAME_CAP_DRAIN_PACE_WINDOW_MS) {
     const slow = cellIds.filter((cell) => !SAME_CAP_FAST_DRAIN_PACE_CELLS.includes(cell))
     if (slow.length > 0) {
       throw new Error(
@@ -205,9 +207,9 @@ export function verifyCanaryAuthority(authority, expected, repositoryRoot) {
     )
   }
   // A batch rolls up to ten cells back to back, so a faster one needs a canary whose own drain
-  // passed; the default is what every wave ran before, and stays available to any canary.
+  // passed; the default and anything slower stay available to any canary.
   if (
-    batchPaceWindowMs !== DEFAULT_SAME_CAP_DRAIN_PACE_WINDOW_MS &&
+    batchPaceWindowMs < DEFAULT_SAME_CAP_DRAIN_PACE_WINDOW_MS &&
     authority.paceVerdict !== 'PASS'
   ) {
     throw new Error(

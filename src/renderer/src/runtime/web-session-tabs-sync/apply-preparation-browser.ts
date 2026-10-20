@@ -13,9 +13,9 @@ import {
 } from '../host-session-snapshot-authority'
 import type { prepareWebSessionTabsSnapshotBase } from './apply-preparation-base'
 import type { OpenFile } from '../../store/slices/editor'
+import { createEditorBuffers } from '../../store/slices/editor/buffers/editor-buffer-record'
 import {
   advanceWebSessionOpenFilesIndex,
-  firstOpenFileByIdForWorktree,
   sameOpenFiles,
   webSessionOpenFilesForWorktree
 } from './state-equality-files'
@@ -117,7 +117,7 @@ export function prepareWebSessionTabsSnapshotBrowser(
   const mirroredEditorTabs = buildMirroredEditorTabs(
     snapshot,
     environmentId,
-    firstOpenFileByIdForWorktree(worktreeOpenFiles),
+    state.openFiles,
     existingTabIndex,
     hostGroupIdByTabId,
     targetGroupId,
@@ -136,6 +136,10 @@ export function prepareWebSessionTabsSnapshotBrowser(
   )
   const mirroredEditorFileIds = new Set(mirroredEditorTabs.map((entry) => entry.file.id))
   const mirroredEditorHostTabIds = new Set(mirroredEditorTabs.map((entry) => entry.hostTabId))
+  const mirroredOpenFiles = [
+    ...new Map(mirroredEditorTabs.map((entry) => [entry.file.id, entry.file])).values()
+  ]
+  const mirroredFileRecords = new Set(mirroredOpenFiles)
   const removedEditorFileIds = new Set(
     (reconcilesNonAgentTabs ? worktreeOpenFiles : [])
       .filter(
@@ -149,8 +153,9 @@ export function prepareWebSessionTabsSnapshotBrowser(
       .map((file) => file.id)
   )
   const isReplacedOpenFile = (file: OpenFile): boolean =>
-    file.runtimeEnvironmentId === environmentId &&
-    (removedEditorFileIds.has(file.id) || mirroredEditorFileIds.has(file.id))
+    mirroredFileRecords.has(file) ||
+    (file.runtimeEnvironmentId === environmentId &&
+      (removedEditorFileIds.has(file.id) || mirroredEditorFileIds.has(file.id)))
   const replacedOpenFileCount = worktreeOpenFiles.filter(isReplacedOpenFile).length
   // Why: both consumers below ask only about this worktree, so the surviving ids answer
   // them in worktree scope instead of walking every open file in the app.
@@ -160,7 +165,6 @@ export function prepareWebSessionTabsSnapshotBrowser(
   for (const fileId of mirroredEditorFileIds) {
     nextWorktreeOpenFileIds.add(fileId)
   }
-  const mirroredOpenFiles = mirroredEditorTabs.map((entry) => entry.file)
   const nextOpenFiles = (() => {
     // Why: with nothing to drop or mirror, rebuilding reproduces the array exactly, so
     // skip the global rebuild the equality check below would have thrown away anyway.
@@ -168,17 +172,17 @@ export function prepareWebSessionTabsSnapshotBrowser(
       return state.openFiles
     }
     const retained = state.openFiles.filter(
-      (file) =>
-        !(
-          file.worktreeId === worktreeId &&
-          file.runtimeEnvironmentId === environmentId &&
-          (removedEditorFileIds.has(file.id) || mirroredEditorFileIds.has(file.id))
-        )
+      (file) => !(file.worktreeId === worktreeId && isReplacedOpenFile(file))
     )
     const next = [...retained, ...mirroredOpenFiles]
     return sameOpenFiles(state.openFiles, next) ? state.openFiles : next
   })()
   advanceWebSessionOpenFilesIndex(batchContext, nextOpenFiles, worktreeId)
+  // Why: a mirrored tab's buffer state is the host's, so its record is (re)created with the tab.
+  const nextEditorBuffers =
+    nextOpenFiles === state.openFiles
+      ? state.editorBuffers
+      : createEditorBuffers(state.editorBuffers ?? {}, mirroredOpenFiles)
   const retainedUnifiedTabs = currentUnifiedTabs.filter((tab) => {
     if (tab.contentType === 'agent-session') {
       // A matching host row is authoritative; retaining the provisional tab beside its mirror
@@ -239,6 +243,7 @@ export function prepareWebSessionTabsSnapshotBrowser(
     removedEditorFileIds,
     nextWorktreeOpenFileIds,
     nextOpenFiles,
+    nextEditorBuffers,
     retainedUnifiedTabs,
     existingViewModeByTabId
   }

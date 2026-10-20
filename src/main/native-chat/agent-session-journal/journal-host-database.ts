@@ -28,14 +28,21 @@ export class JournalHostDatabase {
   /** A failed transaction's ROLLBACK failed too, so the transaction may still be open. */
   private stranded = false
 
-  private constructor(opened: OpenJournalDatabase) {
+  private constructor(
+    opened: OpenJournalDatabase,
+    /** Where the database lives; per-runtime end records sit beside it. */
+    readonly stateDirectory: string
+  ) {
     this.connection = opened.db
     this.readOnly = opened.readOnly
   }
 
   static open(stateDirectory: string): JournalHostDatabase {
     mkdirSync(stateDirectory, { recursive: true })
-    return new JournalHostDatabase(openJournalDatabase(journalDatabasePath(stateDirectory)))
+    return new JournalHostDatabase(
+      openJournalDatabase(journalDatabasePath(stateDirectory)),
+      stateDirectory
+    )
   }
 
   get isClosed(): boolean {
@@ -53,11 +60,27 @@ export class JournalHostDatabase {
     return connection
   }
 
-  /** One IMMEDIATE transaction; see `runJournalTransaction`. */
-  transaction<T>(run: (db: Database.Database) => T): T {
-    return runJournalTransaction(this.db, run, () => {
-      this.stranded = true
-    })
+  /** One IMMEDIATE transaction; see `runJournalTransaction`. `streamed` commits without the per-commit
+   *  fsync: only for rows an OS crash may lose (`isJournalStreamedTextRevision`); the next FULL
+   *  commit makes them durable, so a crash can only lose a suffix of them. */
+  transaction<T>(run: (db: Database.Database) => T, streamed = false): T {
+    const db = this.db
+    if (!streamed) {
+      return runJournalTransaction(db, run, () => {
+        this.stranded = true
+      })
+    }
+    // The level can change only outside a transaction; a stranded one restores FULL on recovery.
+    db.pragma('synchronous = NORMAL')
+    try {
+      return runJournalTransaction(db, run, () => {
+        this.stranded = true
+      })
+    } finally {
+      if (!db.isTransaction) {
+        db.pragma('synchronous = FULL')
+      }
+    }
   }
 
   /** Last, after every store has drained. A close that fails keeps the handle, so the retried
@@ -80,6 +103,7 @@ export class JournalHostDatabase {
         throw journalOpenRefusalError(error)
       }
     }
+    connection.pragma('synchronous = FULL')
     this.stranded = false
   }
 }

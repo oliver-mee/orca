@@ -5,11 +5,13 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { OrcaRuntimeService } from './orca-runtime'
 import { structuredAgentRuntimeRegistration } from './structured-agent-runtime-registrations'
+import { acpLaunchSpecFor } from '../acp/acp-launch-specs'
+import { AcpStructuredSessionAdapter } from '../acp/acp-structured-session-adapter'
 
 afterEach(() => vi.restoreAllMocks())
 
 const LOCAL = {
-  executionHostId: 'local',
+  executionHostId: 'local' as const,
   wslDistro: null,
   workspaceId: 'workspace-1',
   workspaceKind: 'git-worktree' as const
@@ -61,16 +63,53 @@ describe('the structured agent registration list', () => {
     expect(installHost).not.toHaveBeenCalled()
   })
 
+  it('refuses Antigravity chat on a host without a pinned server build', async () => {
+    const { runtime, installHost } = runtimeAt()
+    const adapter = new AcpStructuredSessionAdapter({
+      spec: acpLaunchSpecFor('antigravity')!,
+      resolveLaunch: async () => {
+        throw new Error('no launch')
+      },
+      readLaunch: async () => {
+        throw new Error('no read')
+      },
+      connect: () => {
+        throw new Error('no connection')
+      },
+      dataDirectory: '/orca-data',
+      isWindowsProcessStartTimeAvailable: () => true
+    })
+    Object.assign(runtime, {
+      resolveRuntimeFileTarget: vi.fn(async () => ({ worktree: { path: '/worktree' } }))
+    })
+    const platform = process.platform
+    try {
+      Object.defineProperty(process, 'platform', { configurable: true, value: 'darwin' })
+      expect(adapter.supportsLocation(LOCAL)).toBe(true)
+      Object.defineProperty(process, 'platform', { configurable: true, value: 'win32' })
+      expect(
+        await runtime.getStructuredAgentSessionCreateSupport('id:workspace-1', 'antigravity')
+      ).toEqual({ supported: false, reason: 'agent' })
+      expect(adapter.supportsLocation(LOCAL)).toBe(false)
+      expect(installHost).not.toHaveBeenCalled()
+    } finally {
+      Object.defineProperty(process, 'platform', { configurable: true, value: platform })
+    }
+  })
+
   it("resolves an account home through the agent's registration, with the read purpose", async () => {
     const claude = structuredAgentRuntimeRegistration('claude')!
-    vi.spyOn(claude, 'resolveAccountHomePath').mockResolvedValue('/accounts/claude')
+    vi.spyOn(claude, 'resolveAccountHome').mockResolvedValue({
+      variable: 'CLAUDE_CONFIG_DIR',
+      path: '/accounts/claude'
+    })
     const { runtime, installHost } = runtimeAt()
 
     expect(await runtime.resolveStructuredAgentAccountHome('claude')).toEqual({
       variable: 'CLAUDE_CONFIG_DIR',
       path: '/accounts/claude'
     })
-    expect(claude.resolveAccountHomePath).toHaveBeenCalledWith(
+    expect(claude.resolveAccountHome).toHaveBeenCalledWith(
       expect.objectContaining({ purpose: 'read', location: null, workspacePath: null }),
       expect.anything()
     )

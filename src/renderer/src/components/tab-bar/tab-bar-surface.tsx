@@ -10,7 +10,7 @@ import {
   DropdownMenuTrigger
 } from '@/components/ui/dropdown-menu'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
-import { QuickLaunchAgentMenuItems } from './QuickLaunchButton'
+import { ProjectedAgentMenuItems } from './QuickLaunchButton'
 import TabBarCreateEntry from './TabBarCreateEntry'
 import { TabStripScrollIndicator } from './TabStripScrollIndicator'
 import { TabStripTooltipProvider } from './TabStripTooltipProvider'
@@ -37,7 +37,8 @@ export function renderTabBarSurface({
   tabStripNavigation,
   tabStripDragScroll,
   activeClientHostedBrowserRowId,
-  itemActions
+  itemActions,
+  surfaceRef
 }: {
   props: TabBarProps
   runtime: TabBarRuntimeModel
@@ -47,6 +48,7 @@ export function renderTabBarSurface({
   tabStripDragScroll: ReturnType<typeof useTabStripDragScrollHandlers>
   activeClientHostedBrowserRowId: string | null
   itemActions: TabBarItemActions
+  surfaceRef: (node: HTMLDivElement | null) => void
 }): React.JSX.Element {
   const {
     worktreeId,
@@ -65,7 +67,6 @@ export function renderTabBarSurface({
     showMobileEmulatorIntroCallout,
     windowsTerminalCapabilities,
     defaultWindowsPowerShellImplementation,
-    agentLaunchOptions,
     newTerminalShortcut,
     newBrowserShortcut,
     newSimulatorShortcut,
@@ -73,6 +74,9 @@ export function renderTabBarSurface({
     openMarkdownShortcut
   } = runtime
   const {
+    agentMenu,
+    agentLaunchOptions,
+    launchAgentRow,
     newTabMenuOpen,
     setNewTabMenuOpen,
     setCreateMenuQuery,
@@ -81,9 +85,7 @@ export function renderTabBarSurface({
     handleSelectCreateMenuOption,
     launchAgentFromNewTabEntry,
     runPendingNewTabMenuFocusAfterClose,
-    clearPendingNewTabMenuFocusOnUnmount,
     queueNewActiveTerminalFocusAfterNewTabMenuClose,
-    queueTerminalTabFocusAfterNewTabMenuClose,
     queueFocusAfterNewTabMenuClose,
     showStaticCreateMenuItems
   } = createMenu
@@ -108,19 +110,14 @@ export function renderTabBarSurface({
   })
 
   return (
-    <div
-      ref={clearPendingNewTabMenuFocusOnUnmount}
-      className="flex items-stretch h-full overflow-hidden flex-1 min-w-0"
-      // Why: preload routes native OS drops by this marker — only the tab strip opens files in the editor, not terminal panes.
-      data-native-file-drop-target="editor"
-    >
+    <div ref={surfaceRef} className="flex items-stretch h-full overflow-hidden flex-1 min-w-0">
       {tabStripOverflowState.hasOverflow ? (
         <Tooltip>
           <TooltipTrigger asChild>
             <Button
               variant="ghost"
               size="icon-xs"
-              className="mx-0.5 my-auto h-6 w-5 text-muted-foreground hover:bg-accent/50 hover:text-foreground disabled:opacity-35"
+              className="mx-0.5 my-auto h-6 w-5 @max-[260px]/tab-strip:hidden"
               style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
               aria-label={translate(
                 'auto.components.tab.bar.TabBar.7a9b4af2af',
@@ -187,7 +184,7 @@ export function renderTabBarSurface({
             <Button
               variant="ghost"
               size="icon-xs"
-              className="mx-0.5 my-auto h-6 w-5 text-muted-foreground hover:bg-accent/50 hover:text-foreground disabled:opacity-35"
+              className="mx-0.5 my-auto h-6 w-5 @max-[260px]/tab-strip:hidden"
               style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
               aria-label={translate(
                 'auto.components.tab.bar.TabBar.232e075b07',
@@ -242,7 +239,7 @@ export function renderTabBarSurface({
                 menuOpen={newTabMenuOpen}
                 menuOptions={createMenuOptions}
                 agentOptions={agentLaunchOptions}
-                onLaunchAgent={launchAgentFromNewTabEntry}
+                onLaunchAgentOption={launchAgentFromNewTabEntry}
                 onOpenDefaultTerminal={() => {
                   queueNewActiveTerminalFocusAfterNewTabMenuClose()
                   onNewTerminalTab()
@@ -281,11 +278,7 @@ export function renderTabBarSurface({
           {showStaticCreateMenuItems && showAgentLaunchItems ? (
             <>
               <DropdownMenuSeparator />
-              <QuickLaunchAgentMenuItems
-                worktreeId={worktreeId}
-                groupId={resolvedGroupId}
-                onFocusTerminal={queueTerminalTabFocusAfterNewTabMenuClose}
-              />
+              <ProjectedAgentMenuItems model={agentMenu} runLaunch={launchAgentRow} />
             </>
           ) : null}
         </DropdownMenuContent>

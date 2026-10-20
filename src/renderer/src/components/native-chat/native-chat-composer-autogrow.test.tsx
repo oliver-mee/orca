@@ -46,7 +46,6 @@ function TestField({
   const imeEnterGesture = useImeEnterGestureOwnership()
   return (
     <NativeChatComposerField
-      dropScopeKey="pane-test"
       draftScopeKey="pane-test"
       textareaRef={createRef<HTMLTextAreaElement>()}
       draft={draft}
@@ -127,7 +126,7 @@ describe('native chat composer image attachments', () => {
     render(<TestField draft="" imageAttachments={[{ id: 'image-1', path: '/tmp/example.png' }]} />)
 
     expect(await screen.findByRole('img', { name: 'example.png' })).toBeTruthy()
-    fireEvent.click(screen.getByRole('button', { name: 'View image: example.png' }))
+    fireEvent.click(screen.getByRole('button', { name: /View image: example\.png$/ }))
     expect(screen.getByRole('dialog')).toBeTruthy()
     expect(screen.getByRole('dialog').textContent).toContain('example.png')
   })

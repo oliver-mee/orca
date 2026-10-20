@@ -2,7 +2,7 @@
 import { act, renderHook } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { NativeChatStructuredComposerTransport } from './native-chat-composer-types'
-import type { NativeChatPickerItem } from './native-chat-picker-items'
+import type { NativeChatPickerItem } from '../../../../shared/native-chat-picker-items'
 import type { NativeChatComposerImageAttachment } from './NativeChatComposerField'
 import { useNativeChatComposerSubmit } from './use-native-chat-composer-submit'
 import {
@@ -51,8 +51,7 @@ function harness(options: {
     sendPty: vi.fn(),
     sendStructured: vi.fn(),
     setDraft: vi.fn(),
-    setCaret: vi.fn(),
-    setHistory: vi.fn()
+    setCaret: vi.fn()
   }
   writeNativeChatDraftCache(SCOPE, options.draft)
   const hook = renderHook(
@@ -214,7 +213,6 @@ describe('composer goal mode', () => {
     await act(async () => settle(true))
 
     expect(setObjective).toHaveBeenCalledWith('Ship the parser')
-    expect(calls.setHistory).toHaveBeenCalledOnce()
     expect(readNativeChatDraftCache(SCOPE)).toBe('Ship the parser and its tests')
     expect(hook.result.current.goalMode.active).toBe(true)
   })

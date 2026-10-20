@@ -6,12 +6,19 @@ import { NativeChatImageAttachmentPreview } from './NativeChatImageAttachmentPre
 import type { NativeChatComposerImageAttachment } from './NativeChatComposerField'
 
 const mocks = vi.hoisted(() => ({
-  useLocalImageSrc: vi.fn()
+  useLocalImageSrc: vi.fn(),
+  getConnectionIdForFile: vi.fn(() => {
+    throw new Error('Image preview fixtures must not resolve editor file connections')
+  })
 }))
 
 vi.mock('@/i18n/i18n', () => ({
   translate: (_key: string, fallback: string, options?: Record<string, string>) =>
     fallback.replace(/\{\{(\w+)\}\}/g, (_match, name: string) => options?.[name] ?? '')
+}))
+
+vi.mock('@/lib/connection-context', () => ({
+  getConnectionIdForFile: mocks.getConnectionIdForFile
 }))
 
 vi.mock('@/components/editor/useLocalImageSrc', () => ({
@@ -22,11 +29,23 @@ afterEach(() => {
   cleanup()
   vi.unstubAllGlobals()
   mocks.useLocalImageSrc.mockReset()
+  expect(mocks.getConnectionIdForFile).not.toHaveBeenCalled()
+  mocks.getConnectionIdForFile.mockClear()
 })
 
-function renderPreview(attachment: NativeChatComposerImageAttachment): void {
+function renderPreview(
+  attachment: NativeChatComposerImageAttachment,
+  hostEnvironmentId?: string
+): void {
   vi.stubGlobal('IntersectionObserver', undefined)
-  render(<NativeChatImageAttachmentPreview attachment={attachment} onRemove={vi.fn()} />)
+  render(
+    <NativeChatImageAttachmentPreview
+      number={1}
+      attachment={attachment}
+      hostEnvironmentId={hostEnvironmentId}
+      onRemove={vi.fn()}
+    />
+  )
 }
 
 async function clickOn(target: Element): Promise<void> {
@@ -39,6 +58,21 @@ async function clickOn(target: Element): Promise<void> {
 }
 
 describe('NativeChatImageAttachmentPreview', () => {
+  it('shows the number its [Image #N] marker names, and says it to screen readers', () => {
+    mocks.useLocalImageSrc.mockReturnValue('file:///tmp/shot.png')
+    vi.stubGlobal('IntersectionObserver', undefined)
+    render(
+      <NativeChatImageAttachmentPreview
+        number={3}
+        attachment={{ id: 'a3', path: '/tmp/shot.png' }}
+        onRemove={vi.fn()}
+      />
+    )
+
+    expect(screen.getByText('#3')).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Image #3: View image: shot.png' })).toBeTruthy()
+  })
+
   it('shows the clipboard thumbnail and a spinner while pending', () => {
     mocks.useLocalImageSrc.mockReturnValue(undefined)
     renderPreview({ id: 'a1', path: '', previewUrl: 'blob:clipboard-1', pending: true })
@@ -65,11 +99,54 @@ describe('NativeChatImageAttachmentPreview', () => {
     })
   })
 
+  // The path names a file on the paired server; this machine's disk must never be asked for it.
+  it('reads a stored chip back through the server that holds it', () => {
+    mocks.useLocalImageSrc.mockReturnValue('blob:from-server')
+    const path = '/srv/agent-session-attachments/u1/shot.png'
+    renderPreview({ id: 'a1', path }, 'env-1')
+
+    for (const call of mocks.useLocalImageSrc.mock.calls) {
+      expect(call[3]).toEqual({
+        target: { kind: 'environment', environmentId: 'env-1' },
+        worktreeId: null,
+        worktreePath: null
+      })
+    }
+    expect(mocks.useLocalImageSrc).toHaveBeenCalledWith(path, path, undefined, expect.anything(), {
+      kind: 'chat-image'
+    })
+    expect(screen.getByRole('img', { name: 'shot.png' }).getAttribute('src')).toBe(
+      'blob:from-server'
+    )
+  })
+
+  it("keeps any other path on the chat's usual read route", () => {
+    mocks.useLocalImageSrc.mockReturnValue(undefined)
+    renderPreview({ id: 'a1', path: '/repo/docs/shot.png' }, 'env-1')
+
+    expect(mocks.useLocalImageSrc).toHaveBeenCalledWith(
+      '/repo/docs/shot.png',
+      '/repo/docs/shot.png',
+      undefined,
+      undefined,
+      { kind: 'chat-image' }
+    )
+  })
+
+  it('shows a dropped file by name beside its spinner, with no kind icon, while it waits', () => {
+    mocks.useLocalImageSrc.mockReturnValue(undefined)
+    renderPreview({ id: 'a1', path: '', pending: true, pendingName: 'report.pdf' })
+
+    expect(screen.getByRole('button', { name: 'Image #1: Uploading report.pdf…' })).toBeTruthy()
+    expect(screen.getByText('report.pdf')).toBeTruthy()
+    expect(document.querySelector('.lucide-file-text, .lucide-image')).toBeFalsy()
+  })
+
   it('offers the full-size file, not the clipboard thumbnail, to the chat copy menu', () => {
     mocks.useLocalImageSrc.mockReturnValue('blob:on-disk-1')
     renderPreview({ id: 'a1', path: '/tmp/example.png', previewUrl: 'data:thumbnail' })
 
-    const thumbnail = screen.getByRole('button', { name: 'View image: example.png' })
+    const thumbnail = screen.getByRole('button', { name: 'Image #1: View image: example.png' })
     expect(thumbnail.getAttribute('data-native-chat-copy-image-src')).toBe('blob:on-disk-1')
   })
 
@@ -78,7 +155,7 @@ describe('NativeChatImageAttachmentPreview', () => {
     renderPreview({ id: 'a1', path: '/tmp/example.png', previewUrl: 'data:thumbnail' })
     expect(
       screen
-        .getByRole('button', { name: 'View image: example.png' })
+        .getByRole('button', { name: 'Image #1: View image: example.png' })
         .hasAttribute('data-native-chat-copy-image-src')
     ).toBe(false)
 
@@ -86,7 +163,7 @@ describe('NativeChatImageAttachmentPreview', () => {
     renderPreview({ id: 'a2', path: '/tmp/logo.SVG' })
     expect(
       screen
-        .getByRole('button', { name: 'View image: logo.SVG' })
+        .getByRole('button', { name: 'Image #1: View image: logo.SVG' })
         .hasAttribute('data-native-chat-copy-image-src')
     ).toBe(true)
 
@@ -94,7 +171,7 @@ describe('NativeChatImageAttachmentPreview', () => {
     renderPreview({ id: 'a3', path: '/tmp/shot.png' })
     expect(
       screen
-        .getByRole('button', { name: 'View image: shot.png' })
+        .getByRole('button', { name: 'Image #1: View image: shot.png' })
         .hasAttribute('data-native-chat-copy-image-src')
     ).toBe(false)
   })
@@ -102,11 +179,12 @@ describe('NativeChatImageAttachmentPreview', () => {
   it('stays open through a click on the chat context menu, but not elsewhere outside', async () => {
     mocks.useLocalImageSrc.mockReturnValue('blob:on-disk-1')
     renderPreview({ id: 'a1', path: '/tmp/example.png', previewUrl: 'data:thumbnail' })
-    fireEvent.click(screen.getByRole('button', { name: 'View image: example.png' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Image #1: View image: example.png' }))
     expect(
       within(screen.getByRole('dialog'))
-        .getByRole('img')
-        .getAttribute('data-native-chat-copy-image-src')
+        .getByTestId('pan-zoom-image-canvas')
+        .closest('[data-native-chat-copy-image-src]')
+        ?.getAttribute('data-native-chat-copy-image-src')
     ).toBe('blob:on-disk-1')
     const menu = document.body.appendChild(document.createElement('div'))
     menu.setAttribute('data-native-chat-context-menu', '')
@@ -130,6 +208,7 @@ describe('NativeChatImageAttachmentPreview', () => {
     vi.stubGlobal('IntersectionObserver', undefined)
     render(
       <NativeChatImageAttachmentPreview
+        number={1}
         attachment={{ id: 'm1', path: '', unavailableName: 'orca-paste-1-ab.png' }}
         onRemove={onRemove}
       />
@@ -137,7 +216,7 @@ describe('NativeChatImageAttachmentPreview', () => {
 
     expect(
       screen.getByRole('img', {
-        name: "This pasted image couldn't be brought back with this draft. Remove it, and paste it again if you still need it."
+        name: "Image #1: This pasted image couldn't be brought back with this draft. Remove it, and paste it again if you still need it."
       })
     ).toBeTruthy()
     expect(screen.getByText('Pasted image')).toBeTruthy()
@@ -151,6 +230,7 @@ describe('NativeChatImageAttachmentPreview', () => {
     vi.stubGlobal('IntersectionObserver', undefined)
     render(
       <NativeChatImageAttachmentPreview
+        number={1}
         attachment={{ id: 'm2', path: '', unavailableName: 'diagram.png' }}
         onRemove={vi.fn()}
       />
@@ -158,7 +238,7 @@ describe('NativeChatImageAttachmentPreview', () => {
 
     expect(
       screen.getByRole('img', {
-        name: "diagram.png couldn't be brought back with this draft. Attach it again or remove it."
+        name: "Image #1: diagram.png couldn't be brought back with this draft. Attach it again or remove it."
       })
     ).toBeTruthy()
     expect(screen.getByText('diagram.png')).toBeTruthy()

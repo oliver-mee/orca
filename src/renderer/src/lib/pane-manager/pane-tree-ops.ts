@@ -4,7 +4,6 @@ import type {
   ManagedPaneInternal,
   PaneStyleOptions
 } from './pane-manager-types'
-import type { PaneLayoutEditIntent } from '../../../../shared/rpc-contract/session-tabs-schemas-params'
 import { createDivider, disposeDivider } from './pane-divider'
 import { disposeWebgl, attachWebgl } from './pane-webgl-renderer'
 import { safeFit } from './pane-fit'
@@ -27,8 +26,9 @@ type TreeOpsCallbacks = {
   getStyleOptions: () => PaneStyleOptions
   safeFit: (pane: ManagedPane) => void
   refitPanesUnder: (el: HTMLElement) => void
-  onLayoutChanged?: (intent?: PaneLayoutEditIntent) => void
+  onLayoutChanged?: () => void
   onDragActiveChange?: (active: boolean) => void
+  onDividerRatiosCommitted?: () => void
   isDestroyed?: () => boolean
   requestPaneReparentFrame?: (callback: FrameRequestCallback) => void
 }
@@ -139,7 +139,8 @@ export function insertPaneNextTo(
   const divider = createDivider(isVertical, callbacks.getStyleOptions(), {
     refitPanesUnder: callbacks.refitPanesUnder,
     onLayoutChanged: callbacks.onLayoutChanged,
-    onDragActiveChange: callbacks.onDragActiveChange
+    onDragActiveChange: callbacks.onDragActiveChange,
+    onDividerRatiosCommitted: callbacks.onDividerRatiosCommitted
   })
 
   // Apply flex styles to both panes
@@ -245,14 +246,14 @@ export function removeDividers(parent: HTMLElement): void {
 
 /**
  * Create a flex split wrapper that replaces `existingContainer` in the DOM,
- * then places [existing] [divider] [new] inside it.
+ * then places [existing] [divider] [new] inside it ([new] first when `newPaneFirst`).
  */
 export function wrapInSplit(
   existingContainer: HTMLElement,
   newContainer: HTMLElement,
   isVertical: boolean,
   divider: HTMLElement,
-  opts?: { ratio?: number }
+  opts?: { ratio?: number; newPaneFirst?: boolean }
 ): void {
   const parent = existingContainer.parentElement
   if (!parent) {
@@ -292,7 +293,9 @@ export function wrapInSplit(
 
   // Replace existing with split in the DOM, then build children
   parent.replaceChild(split, existingContainer)
-  split.appendChild(existingContainer)
-  split.appendChild(divider)
-  split.appendChild(newContainer)
+  if (opts?.newPaneFirst) {
+    split.append(newContainer, divider, existingContainer)
+  } else {
+    split.append(existingContainer, divider, newContainer)
+  }
 }

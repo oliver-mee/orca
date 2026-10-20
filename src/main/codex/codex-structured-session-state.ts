@@ -1,12 +1,13 @@
+import type { StructuredAgentSessionChildWorkProducer } from '../native-chat/agent-session-wire/structured-agent-session-subagent-rows'
 import type { StructuredAgentSessionLogger } from '../native-chat/agent-session-wire/structured-agent-session-logger'
+import type { AgentSessionAccountKind } from '../../shared/agent-session-availability'
 import type {
   AgentJournalAnsweredTurnIdentity,
-  AgentJournalItemIdentity,
-  AgentSessionJournalIdentity
+  AgentJournalItemIdentity
 } from '../../shared/agent-session-journal-types'
 import { randomUUID } from 'node:crypto'
 import type { AgentJournalDispatchRejection } from '../../shared/agent-session-failure-words'
-import { cancelProcessAcquisition } from '../../shared/child-process/cancel-process-acquisition'
+import { cancelProcessAcquisition } from '@orca/process-host/cancel-process-acquisition'
 import type {
   CodexAppServerConnection,
   openCodexAppServerConnection
@@ -20,12 +21,15 @@ import type { CodexDispatchEchoes } from './codex-structured-dispatch-echo'
 import type { AgentChildWorkEvidence } from '../../shared/agent-status-child-work-evidence'
 import type { CodexBackgroundTaskTracker } from './codex-background-task-tracker'
 import type { CodexJournalTranslator } from './codex-structured-journal-translation'
-import type { StructuredAgentSessionEndedEvent } from '../native-chat/agent-session-wire/structured-agent-session-adapter'
+import type { StructuredAgentSessionLifecycleEvent } from '../native-chat/agent-session-wire/structured-agent-session-adapter'
 import type { CodexStructuredPermissionPolicy } from './codex-structured-permission-policy'
+import type { StructuredLaunchRequest } from '../runtime/structured-agent-launch-composition'
 import type {
   AgentModelCatalogSessionAccess,
   AgentModelCatalogStore
 } from '../native-chat/agent-model-catalog/agent-model-catalog-store'
+import type { StructuredAgentSessionProviderOpen } from '../native-chat/agent-session-wire/structured-agent-session-provider-open-contract'
+import type { NativeChatVisualsLaunch } from '../native-chat/native-chat-visuals-delivery'
 
 export type CodexSessionCatalogAccess = AgentModelCatalogSessionAccess
 
@@ -42,7 +46,13 @@ export type CodexStructuredLaunch = {
   permissionPolicy?: CodexStructuredPermissionPolicy
   /** The model the session chose; the thread opens on it so its first turn is not a switch. */
   model?: string
+  /** The child's sealed environment, and the inherited keys it must not keep. */
   env?: Record<string, string>
+  envToDelete?: readonly string[]
+  /** The session values each command must see, whatever the user's shell environment policy. */
+  commandEnv?: Record<string, string>
+  /** This chat's scratch folder and visuals skill; absent when the chat has no visuals. */
+  visuals?: NativeChatVisualsLaunch
 }
 
 /** Turn and item boundaries, timed by when the host received them, never by when a buffered or
@@ -78,19 +88,23 @@ export type CodexStructuredSessionEvent =
       codexItemId: string
       promptKey: string
     }
-  | StructuredAgentSessionEndedEvent
+  | StructuredAgentSessionLifecycleEvent
   /** Translator-only compatibility for callers that do not participate in host recovery. */
   | { type: 'ended'; sessionId: string; reason: string; observedAt?: number }
 
 export type CodexStructuredSessionAdapterDeps = {
-  resolveLaunch: (input: {
-    identity: AgentSessionJournalIdentity
-  }) => Promise<CodexStructuredLaunch>
+  resolveAccountKind?: (home: string) => AgentSessionAccountKind | undefined
+  resolveLaunch: (input: StructuredLaunchRequest) => Promise<CodexStructuredLaunch>
   onEvent?: (event: CodexStructuredSessionEvent) => void
   /** Where bookkeeping a close or exit does after the child is gone reports a failure. */
   logger?: StructuredAgentSessionLogger
   /** What the session's child work did, delivered after the journal handled the frame. */
-  onChildWorkEvidence?: (sessionId: string, evidence: AgentChildWorkEvidence[]) => void
+  /** `producer`: the reporting child's own sink, which writes what the report changes. */
+  onChildWorkEvidence?: (
+    sessionId: string,
+    evidence: AgentChildWorkEvidence[],
+    producer?: StructuredAgentSessionChildWorkProducer
+  ) => void
   /** A send admitted earlier: its identity once Codex echoes it, or its rejection when the turn
    *  Codex answered it into ended without taking it. */
   onDispatchSettledLate?: (
@@ -102,9 +116,8 @@ export type CodexStructuredSessionAdapterDeps = {
         } & AgentJournalDispatchRejection)
     )
   ) => void
-  /** Codex reported its thread not running with no turn open: a send whose
-   *  dispatch was never answered is owed nothing after this. */
-  onPrimaryThreadStoppedRunning?: (input: { sessionId: string }) => void
+  /** The sends Codex holds (`CodexDispatchEchoes.heldSends`) changed with no journal row. */
+  onHeldSendsChanged?: (input: { sessionId: string }) => void
   openConnection?: typeof openCodexAppServerConnection
   readProcessStartTime?: (pid: number) => Promise<number | null>
   mintLinkId?: () => string
@@ -116,6 +129,7 @@ export type CodexStructuredSessionAdapterDeps = {
 }
 
 export type CodexSession = {
+  account?: AgentSessionAccountKind
   connection: CodexAppServerConnection
   ended: boolean
   /** First observed child exit survives rejected settlement admission. */
@@ -144,6 +158,10 @@ export type CodexSession = {
     serviceTier?: string | null
     serviceTierKnown?: true
   }
+  /** A fresh thread opened without a model override proved these native defaults. */
+  nativeDefaults?: { model?: string; effort?: string; personality?: string; serviceTier?: string }
+  /** Overrides actually attempted on this child, independently of future saved picks. */
+  appliedTurnOptions?: Readonly<Record<string, string>>
   /** Absent when the adapter runs without a host catalog store (tests). */
   catalogAccess?: CodexSessionCatalogAccess
   /** Sends whose identity is still to be settled by the provider echo. */
@@ -195,8 +213,13 @@ export function requireLiveCodexSession(
 
 export type CodexAcquisitionAttempt = {
   window: CodexAcquisitionWindow
+  acquisitionGeneration?: string
+  open?: StructuredAgentSessionProviderOpen
+  dispose?: () => void
   cancelled: boolean
+  requestedClose?: boolean
   exitProven: boolean
+  exitError?: Error
   finished: Promise<void>
   finish: () => void
 }
@@ -281,17 +304,24 @@ export class CodexAcquisitionRegistry {
 }
 
 export async function cancelCodexAcquisitionAttempt(
-  attempt: CodexAcquisitionAttempt | undefined
+  attempt: CodexAcquisitionAttempt | undefined,
+  requestedClose = true
 ): Promise<boolean> {
   if (!attempt) {
     return true
   }
-  return cancelProcessAcquisition({
+  const closed = await cancelProcessAcquisition({
     cancel: () => {
       attempt.cancelled = true
+      attempt.requestedClose = requestedClose
     },
     connection: () => attempt.window.connection,
     exitProven: () => attempt.exitProven,
     finished: attempt.finished
   })
+  if (closed) {
+    attempt.exitProven = true
+    attempt.dispose?.()
+  }
+  return closed
 }

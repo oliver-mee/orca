@@ -57,6 +57,7 @@ vi.mock('lucide-react-native', () =>
       'ChevronsUpDown',
       'ShieldQuestion',
       'ImagePlus',
+      'Plus',
       'Mic',
       'Square',
       'X',
@@ -66,17 +67,17 @@ vi.mock('lucide-react-native', () =>
   )
 )
 vi.mock('../MobileNativeChatMessage', () => ({ MobileNativeChatMessage: 'ChatMessage' }))
+vi.mock('../MobileNativeChatRowOverlaysHost', () => ({ MobileNativeChatRowOverlaysHost: 'View' }))
+vi.mock('../MobileNativeChatVisual', () => ({ useMobileNativeChatVisualRenderer: () => null }))
+vi.mock('../../platform/use-reduced-motion', () => ({ useReducedMotionEnabled: () => null }))
 vi.mock('../MobileNativeChatLiveLine', () => ({ MobileNativeChatLiveLine: 'LiveStatus' }))
 vi.mock('../MobileNativeChatAsk', () => ({ MobileNativeChatAsk: 'ChatAsk' }))
-vi.mock('../MobileAgentWorkingIndicator', () => ({
-  MobileAgentWorkingIndicator: 'WorkingIndicator'
-}))
 vi.mock('../MobileNativeChatSessionOptionPickers', () => ({
   MobileNativeChatSessionOptionPickers: 'SessionOptions'
 }))
-vi.mock('../MobileNativeChatComposerSuggestions', () => ({
-  MobileNativeChatComposerSuggestions: 'Suggestions',
-  composerSuggestionInsertText: () => ''
+vi.mock('../MobileNativeChatComposerMenu', () => ({
+  MobileNativeChatComposerMenu: 'Suggestions',
+  composerMenuInsertText: () => ''
 }))
 vi.mock('../../components/ActionSheetModal', () => ({ ActionSheetModal: 'ActionSheetModal' }))
 vi.mock('../../components/MobileMarkdown', () => ({ MobileMarkdown: 'Markdown' }))
@@ -104,9 +105,9 @@ const structured = {
 vi.mock('../use-mobile-session-view-mode', () => ({
   useMobileSessionViewMode: () => ({
     isTabChatView: () => visible.value,
-    toggleTabChatView: () => {
-      visible.value = !visible.value
-    }
+    setTabView: (_tabId: string, view: string) =>
+      Object.assign(visible, { value: view === 'chat' }),
+    toggleTabChatView: () => Object.assign(visible, { value: !visible.value })
   })
 }))
 vi.mock('../use-mobile-native-chat-session-lane', () => ({
@@ -138,9 +139,9 @@ vi.mock('../use-mobile-native-chat-session-option-controller', () => ({
 vi.mock('../use-mobile-native-chat-file-search', () => ({
   useMobileNativeChatFileSearch: () => ({ nativeChatFilePaths: [], loadNativeChatFiles: vi.fn() })
 }))
-vi.mock('../use-mobile-native-chat-queued-slot', () => ({
-  NO_QUEUED_SLOT: {},
-  useMobileNativeChatQueuedSlot: () => ({})
+vi.mock('../use-mobile-native-chat-composer-tray', () => ({
+  NO_COMPOSER_TRAY: {},
+  useMobileNativeChatComposerTray: () => ({})
 }))
 vi.mock('../use-mobile-native-chat-streaming-bubble', () => ({
   useMobileNativeChatStreamingBubble: () => null
@@ -231,6 +232,7 @@ function Harness(props: HarnessProps) {
     sendErrorMessage: null,
     onClearSendError: vi.fn(),
     sendSurfaceId: 'surface',
+    sessionId: null,
     getSendCompletionGeneration: () => 0,
     keyboardInset: 0
   })
