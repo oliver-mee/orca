@@ -64,8 +64,12 @@ test('annotates an element of a client-hosted browser page', async ({ testRepoPa
         }, fixture.origin)
       )
       .toBe(375)
-    await client.page.keyboard.press('Escape')
-    await client.page.keyboard.press('Escape')
+    // Hidden-window keyboard focus may remain in the guest. Close the actual
+    // Radix menu by its trigger state before the next deliberate open.
+    if ((await menu.getAttribute('aria-expanded')) === 'true') {
+      await menu.click()
+    }
+    await expect(menu).toHaveAttribute('aria-expanded', 'false')
     await testInfo.attach('client-hosted-mobile-viewport', {
       body: await client.page.screenshot({ path: testInfo.outputPath('mobile-viewport.png') }),
       contentType: 'image/png'
