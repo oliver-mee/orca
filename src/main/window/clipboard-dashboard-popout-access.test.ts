@@ -21,7 +21,7 @@ const {
 }))
 
 vi.mock('electron', () => ({
-  app: { getPath: vi.fn(() => '/tmp') },
+  app: { getPath: vi.fn(() => '/tmp'), commandLine: { getSwitchValue: vi.fn(() => 'x11') } },
   clipboard: {
     read: clipboardRead,
     readText: clipboardReadText,

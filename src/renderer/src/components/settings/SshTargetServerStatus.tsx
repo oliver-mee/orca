@@ -6,12 +6,9 @@ import { cn } from '@/lib/utils'
 import { useAppStore } from '@/store'
 import { Button } from '../ui/button'
 import { sshHostServerStatusLine } from '@/ssh/ssh-host-server-status-copy'
-import {
-  endOldRelayTerminalsLabel,
-  useEndOldRelayTerminalsAction
-} from '@/ssh/ssh-old-relay-terminals-action'
-import { useSshConnectInFlight } from '@/ssh/ssh-connect-in-flight'
 import { SshHostChangedActions } from './SshHostChangedActions'
+import { SshHostMoveAnywayAction } from './SshHostMoveAnywayAction'
+import { SshHostRestartServerAction } from './SshHostRestartServerAction'
 
 /** Whether this SSH host's managed Orca server serves it, and why not when it doesn't. */
 export function SshTargetServerStatus({
@@ -23,8 +20,6 @@ export function SshTargetServerStatus({
 }): React.JSX.Element | null {
   const state = useAppStore((s) => s.sshConnectionStates.get(target.id))
   const line = sshHostServerStatusLine(target, state)
-  const endOldTerminals = useEndOldRelayTerminalsAction(target.id)
-  const connectInFlight = useSshConnectInFlight(target.id)
   if (!line) {
     return null
   }
@@ -40,27 +35,6 @@ export function SshTargetServerStatus({
       >
         {line.text}
       </p>
-      {line.stopHint ? (
-        <div className="space-y-1 px-1">
-          <p className="text-xs text-muted-foreground">{line.stopHint.lead}</p>
-          <pre className="scrollbar-sleek overflow-auto whitespace-pre-wrap break-all rounded-md border border-border bg-background px-3 py-2 font-mono text-[11px] leading-relaxed text-foreground select-text">
-            {line.stopHint.command}
-          </pre>
-        </div>
-      ) : null}
-      {endOldTerminals ? (
-        <div className="flex justify-end px-1">
-          <Button
-            type="button"
-            size="xs"
-            variant="outline"
-            disabled={connectInFlight}
-            onClick={endOldTerminals}
-          >
-            {endOldRelayTerminalsLabel()}
-          </Button>
-        </div>
-      ) : null}
       {line.detail ? (
         <Collapsible>
           <CollapsibleTrigger asChild>
@@ -77,6 +51,12 @@ export function SshTargetServerStatus({
         </Collapsible>
       ) : null}
       <SshHostChangedActions target={target} onChanged={onChanged} />
+      <SshHostRestartServerAction status={state?.managedServer} onChanged={onChanged} />
+      <SshHostMoveAnywayAction
+        target={target}
+        status={state?.managedServer}
+        onChanged={onChanged}
+      />
     </div>
   )
 }
