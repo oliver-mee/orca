@@ -1,3 +1,4 @@
+import { useClientHostedBrowserProfiles } from './use-client-hosted-browser-profiles'
 import { useAppStore } from '@/store'
 import { BrowserViewportPresetMenu } from './browser-viewport-preset-menu'
 import type { BrowserViewportPresetId } from '../../../../../shared/browser-workspace-types'
@@ -26,58 +27,71 @@ import { RemoteRuntimeEgressIndicator } from './browser-egress-indicator'
 import type { BrowserReloadTrigger } from '../navigate/browser-reload-action'
 import type { BrowserAddressBarEditSessionBinding } from './use-browser-address-bar-edit-session'
 
-/**
- * Folded tools, viewport presets and reload. Profile and cookie rows are left out: a client-hosted page's session
- * profile is chosen by the host, not by this desktop's profile list.
- */
+/** Uses the owning runtime for profiles; cookie import remains out of scope. */
 function ClientHostedBrowserOverflowMenu({
   overflow,
+  runtimeEnvironmentId,
+  remotePageId,
   onReload,
   onHardReload,
   viewportPresetId,
   onApplyViewportPreset
 }: {
   overflow: BrowserChromeOverflowMenuProps
+  runtimeEnvironmentId: string
+  remotePageId: string | null
   onReload: () => void
   onHardReload: () => void
   viewportPresetId: BrowserViewportPresetId | null
   onApplyViewportPreset: (id: BrowserViewportPresetId | null) => void
 }): React.JSX.Element {
+  const profiles = useClientHostedBrowserProfiles(runtimeEnvironmentId, remotePageId)
   return (
-    <DropdownMenu modal={false}>
-      <DropdownMenuTrigger asChild>
-        <Button
-          ref={overflow.triggerRef}
-          size="icon"
-          variant="ghost"
-          className="h-7 w-7"
-          aria-label={translate(
-            'auto.components.browser.pane.BrowserToolbarMenu.7b838540c7',
-            'Browser menu'
-          )}
-        >
-          <MoreHorizontal className="size-4" />
-        </Button>
-      </DropdownMenuTrigger>
-      <DropdownMenuContent align="end" onCloseAutoFocus={overflow.onMenuCloseAutoFocus}>
-        <BrowserChromeFoldedMenuItems
-          tools={overflow.tools}
-          deferUntilClose={overflow.deferUntilClose}
-        />
-        <BrowserViewportPresetMenu
-          viewportPresetId={viewportPresetId}
-          onApplyViewportPreset={onApplyViewportPreset}
-        />
-        <DropdownMenuItem onSelect={onReload}>
-          <RefreshCw className="size-3.5" />
-          {translate('auto.components.browser.pane.BrowserPane.0e080d820e', 'Reload')}
-        </DropdownMenuItem>
-        <DropdownMenuItem onSelect={onHardReload}>
-          <RotateCcw className="size-3.5" />
-          {translate('auto.components.browser.pane.BrowserPane.a1f3c2e4b5', 'Hard Reload')}
-        </DropdownMenuItem>
-      </DropdownMenuContent>
-    </DropdownMenu>
+    <>
+      <DropdownMenu
+        modal={false}
+        onOpenChange={(open) => {
+          if (open) {
+            void profiles.load()
+          }
+        }}
+      >
+        <DropdownMenuTrigger asChild>
+          <Button
+            ref={overflow.triggerRef}
+            size="icon"
+            variant="ghost"
+            className="h-7 w-7"
+            aria-label={translate(
+              'auto.components.browser.pane.BrowserToolbarMenu.7b838540c7',
+              'Browser menu'
+            )}
+          >
+            <MoreHorizontal className="size-4" />
+          </Button>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent align="end" onCloseAutoFocus={overflow.onMenuCloseAutoFocus}>
+          <BrowserChromeFoldedMenuItems
+            tools={overflow.tools}
+            deferUntilClose={overflow.deferUntilClose}
+          />
+          {profiles.items}
+          <BrowserViewportPresetMenu
+            viewportPresetId={viewportPresetId}
+            onApplyViewportPreset={onApplyViewportPreset}
+          />
+          <DropdownMenuItem onSelect={onReload}>
+            <RefreshCw className="size-3.5" />
+            {translate('auto.components.browser.pane.BrowserPane.0e080d820e', 'Reload')}
+          </DropdownMenuItem>
+          <DropdownMenuItem onSelect={onHardReload}>
+            <RotateCcw className="size-3.5" />
+            {translate('auto.components.browser.pane.BrowserPane.a1f3c2e4b5', 'Hard Reload')}
+          </DropdownMenuItem>
+        </DropdownMenuContent>
+      </DropdownMenu>
+      {profiles.dialog}
+    </>
   )
 }
 
@@ -115,6 +129,11 @@ export function ClientHostedBrowserPageToolbar({
   elementTools: BrowserChromeElementTools
   markup: BrowserChromeMarkupTool
 }): React.JSX.Element {
+  const handle = useAppStore((state) => state.remoteBrowserPageHandlesByPageId[browserPageId])
+  const remotePageId =
+    handle?.environmentId === runtimeEnvironmentId && handle.placement?.kind === 'client'
+      ? handle.remotePageId
+      : null
   const { runReloadTrigger } = reload
   const onApplyViewportPreset = useCallback(
     (id: BrowserViewportPresetId | null) => {
@@ -125,6 +144,9 @@ export function ClientHostedBrowserPageToolbar({
   const renderOverflowMenu = useCallback(
     (overflow: BrowserChromeOverflowMenuProps) => (
       <ClientHostedBrowserOverflowMenu
+        key={`${runtimeEnvironmentId}:${remotePageId ?? 'pending'}`}
+        runtimeEnvironmentId={runtimeEnvironmentId}
+        remotePageId={remotePageId}
         overflow={overflow}
         viewportPresetId={viewportPresetId}
         onApplyViewportPreset={onApplyViewportPreset}
@@ -132,7 +154,7 @@ export function ClientHostedBrowserPageToolbar({
         onHardReload={() => runReloadTrigger('hard-reload')}
       />
     ),
-    [runReloadTrigger, viewportPresetId, onApplyViewportPreset]
+    [runReloadTrigger, viewportPresetId, onApplyViewportPreset, runtimeEnvironmentId, remotePageId]
   )
   return (
     <BrowserChromeToolbar
