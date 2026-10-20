@@ -1,18 +1,18 @@
-import type * as ExecCommandModule from '../../ssh/remote-exec-command'
+import type * as ExecCommandModule from '../../ssh/remote-exec/remote-exec-command'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-vi.mock('../../ssh/remote-exec-command', async (importOriginal) => ({
+vi.mock('../../ssh/remote-exec/remote-exec-command', async (importOriginal) => ({
   ...(await importOriginal<typeof ExecCommandModule>()),
   execCommand: vi.fn(),
   isUnconfirmedSshCommandTermination: (error: unknown) =>
     error instanceof Error && error.message === 'unconfirmed'
 }))
 
-import { execCommand } from '../../ssh/remote-exec-command'
+import { execCommand } from '../../ssh/remote-exec/remote-exec-command'
 import { launchOrcadAndAwaitReadiness } from './orcad-remote-runtime-control'
 import { getRemoteHostPlatform } from '../../ssh/ssh-remote-platform'
 import type { OrcadLaunchSpec } from './orcad-remote-launch'
-import { createSshOperationAbortError } from '../../ssh/ssh-connection-utils'
+import { createSshOperationAbortError } from '../../ssh/connection/ssh-exec-options'
 
 const host = getRemoteHostPlatform('linux-arm64')
 const spec: OrcadLaunchSpec = {

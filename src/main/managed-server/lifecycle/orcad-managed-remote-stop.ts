@@ -6,7 +6,7 @@
  * nonce). The slot's own `orcad.js` then writes the request and proves exit on the host.
  */
 import { randomUUID } from 'node:crypto'
-import { shellEscape } from '../../ssh/ssh-connection-utils'
+import { quotePosixShell } from '../../../shared/shell-argument-quoting'
 import { selectOrcadSlotRuntimeCommand } from '../install/orcad-remote-runtime'
 import {
   parseOrcadReadinessWaitOutput,
@@ -16,13 +16,13 @@ import { execOrcadRemote } from '../install/orcad-remote-runtime-control'
 import { readBoundedOrcadRemoteRecord } from '../install/orcad-remote-record-file'
 import { orcadSlotDir, type OrcadSlotOptions } from '../../ssh/orcad-recovery-slot'
 import { isWindowsRemoteHost, joinRemotePath } from '../../ssh/ssh-remote-platform'
-import { isUnconfirmedSshCommandTermination } from '../../ssh/remote-exec-command'
+import { isUnconfirmedSshCommandTermination } from '../../ssh/remote-exec/remote-exec-command'
 import {
   orcadWindowsNodeCommandLine,
   orcadWindowsSlotOpCommand,
   readOrcadWindowsEncodedAnswer
 } from '../install/orcad-remote-windows-node'
-import { ORCAD_WINDOWS_RUNTIME_MARKER } from '../../ssh/orcad-windows-host-script'
+import { ORCAD_WINDOWS_RUNTIME_MARKER } from '../host-state/orcad-windows-host-script'
 import { ORCAD_LOCK_FILE_NAME, parseOrcadInstanceLockRecord } from '../../orcad/orcad-instance-lock'
 import {
   ORCAD_CANCEL_MANAGED_STOP_FLAG,
@@ -129,7 +129,7 @@ async function runSlotCommand(
     : await execOrcadRemote(
         options,
         `${selectOrcadSlotRuntimeCommand(options.host, slotDir, options.nodePath)} && ` +
-          `"$orcad_runtime" ${shellEscape(entry)} ${flag} ${shellEscape(JSON.stringify(request))}`
+          `"$orcad_runtime" ${quotePosixShell(entry)} ${flag} ${quotePosixShell(JSON.stringify(request))}`
       )
   const line = output
     .trim()

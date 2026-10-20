@@ -6,7 +6,7 @@
  * (docs/reference/windows-edr-posture.md). One exec now waits host-side for a complete line, an
  * oversized file, or its own bounded deadline.
  */
-import { shellEscape } from '../../ssh/ssh-connection-utils'
+import { quotePosixShell } from '../../../shared/shell-argument-quoting'
 import {
   isWindowsRemoteHost,
   joinRemotePath,
@@ -22,7 +22,7 @@ import {
   orcadWindowsSlotOpCommand,
   readOrcadWindowsEncodedAnswer
 } from './orcad-remote-windows-node'
-import { ORCAD_WINDOWS_READINESS_MARKER } from '../../ssh/orcad-windows-host-script'
+import { ORCAD_WINDOWS_READINESS_MARKER } from '../host-state/orcad-windows-host-script'
 
 /** Under the 30 s exec timeout, so one wait never reads as an unanswered host. */
 export const ORCAD_READINESS_WAIT_MAX_SECONDS = 20
@@ -33,7 +33,7 @@ function posixReadinessWaitCommand(
   remoteInstallDir: string,
   waitSeconds: number
 ): string {
-  const file = shellEscape(joinRemotePath(host, remoteInstallDir, ORCAD_READINESS_FILENAME))
+  const file = quotePosixShell(joinRemotePath(host, remoteInstallDir, ORCAD_READINESS_FILENAME))
   const read = `head -c ${ORCAD_READINESS_MAX_BYTES + 1} ${file} 2>/dev/null`
   return [
     // Fractional sleep is not POSIX; probe it once so polling stays fine-grained where it can.

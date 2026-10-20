@@ -7,9 +7,9 @@ import {
 import { getRepoExecutionHostId, type ExecutionHostId } from '../../shared/execution-host'
 import {
   readAllWorktreeMetaForHost,
-  readWorktreeMetaForHost,
-  writeWorktreeMetaForHost
+  readWorktreeMetaForHost
 } from '../persistence/host-qualified-worktree-meta'
+import { hostWorktreeTarget } from '../../shared/worktree/host-qualified-identity'
 import { isFolderRepo } from '../../shared/repo-kind'
 import {
   getConnectedWorktreeLineageIds,
@@ -24,7 +24,7 @@ import type { ProjectExecutionRuntimeResolution } from '../../shared/project-exe
 import type { RuntimeStore } from './runtime-store-contract'
 
 import { areWorktreePathsEqual } from '../git/worktree-path-comparison'
-import { mergeWorktree } from '../ipc/worktree-logic'
+import { mergeWorktree } from '../ipc/worktree-metadata-merge'
 import { pruneLineageForMissingRepoWorktrees } from '../worktree-lineage-pruning'
 import { getRepoOwnedWorktreeMeta } from '../worktree-metadata-ownership'
 import { resolveLocalProjectRuntimesForRepos } from '../project-runtime-git-options'
@@ -41,11 +41,9 @@ type RepoWorktreeRowStore = Pick<
   | 'getWorktreeMeta'
   | 'getWorktreeMetaForHost'
   | 'setWorktreeMeta'
-  | 'setWorktreeMetaForHost'
   | 'getAllWorktreeLineage'
   | 'getAllWorkspaceLineage'
   | 'removeWorktreeLineage'
-  | 'removeWorkspaceLineage'
 >
 
 /**
@@ -172,7 +170,7 @@ export async function resolveRepoWorktreeRows(
     const meta = ownedExistingMeta?.instanceId
       ? ownedExistingMeta
       : ownedExistingMeta || (!existingMeta && repoOwnerCount === 1)
-        ? writeWorktreeMetaForHost(store, worktreeId, expectedHostId, {})
+        ? store.setWorktreeMeta(hostWorktreeTarget({ id: worktreeId, hostId: expectedHostId }), {})
         : undefined
     const merged = {
       ...mergeWorktree(repo.id, gitWorktree, meta, repo.displayName),

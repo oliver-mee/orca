@@ -27,8 +27,11 @@ import {
   remoteNodeRuntimeStoreDir,
   tryWithRuntimeStoreLock
 } from './remote-node-runtime-store-lock'
-import { shellEscape } from '../../ssh/ssh-connection-utils'
-import { execCommand, isUnconfirmedSshCommandTermination } from '../../ssh/remote-exec-command'
+import { quotePosixShell } from '../../../shared/shell-argument-quoting'
+import {
+  execCommand,
+  isUnconfirmedSshCommandTermination
+} from '../../ssh/remote-exec/remote-exec-command'
 import { INSTALL_LOCK_STALE_MS } from './remote-install-lock'
 import {
   moveRemoteTreeCommand,
@@ -142,7 +145,7 @@ export function sweepStaleRuntimeStagesCommand(
     return windowsSweepStaleRuntimeStagesCommand(storeDir, staleMinutes, SWEPT_STAGE)
   }
   return [
-    `for s in ${shellEscape(storeDir)}/${RUNTIME_STORE_STAGE_PREFIX}*; do`,
+    `for s in ${quotePosixShell(storeDir)}/${RUNTIME_STORE_STAGE_PREFIX}*; do`,
     '  [ -d "$s" ] && [ ! -L "$s" ] || continue',
     `  recent=$(find "$s" -mmin -${staleMinutes} -print 2>/dev/null) || continue`,
     '  [ -z "$recent" ] || continue',

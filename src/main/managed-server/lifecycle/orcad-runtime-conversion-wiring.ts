@@ -4,7 +4,7 @@ import {
   getPreferredPairingOffer,
   type KnownRuntimeEnvironment
 } from '../../../shared/runtime-environments'
-import { disconnectRegisteredSshTarget } from '../../ipc/ssh-session-teardown'
+import { disconnectRegisteredSshTarget } from '../../ipc/ssh/ssh-session-teardown'
 import type { OrcadMigrationDestinationCatalog } from '../../ssh/orcad-migration-cutover-coordinator'
 import {
   abortRemoteOrcadMigrationCatalog,
@@ -14,6 +14,7 @@ import {
   stageRemoteOrcadMigrationCatalog,
   stageRemoteOrcadMigrationSnapshotChunk
 } from '../../ssh/orcad-migration-catalog-client'
+import { abortRemoteOrcadMigrationCatalogByReference } from '../../ssh/orcad-migration-catalog-reference-client'
 import { censusHostRelayTerminalsFor } from '../../ssh/legacy-relay/ssh-host-relay-census-for-target'
 import type { OrcadManagedConversionArgs } from './orcad-runtime-conversion'
 import type { OrcadServerRepository } from '../../ssh/orcad-migration-repository-link'
@@ -33,6 +34,8 @@ export function orcadMigrationDestinationFor(
     stage: (manifest) => stageRemoteOrcadMigrationCatalog(pairingCode, manifest, options),
     commit: (manifest) => commitRemoteOrcadMigrationCatalog(pairingCode, manifest, options),
     abort: (manifest) => abortRemoteOrcadMigrationCatalog(pairingCode, manifest, options),
+    abortByReference: (manifest) =>
+      abortRemoteOrcadMigrationCatalogByReference(pairingCode, manifest, options),
     stageChunk: (request) => stageRemoteOrcadMigrationSnapshotChunk(pairingCode, request, options)
   }
 }
