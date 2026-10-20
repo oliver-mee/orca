@@ -106,6 +106,7 @@ test('annotates an element of a client-hosted browser page', async ({ testRepoPa
             return guest.executeJavaScript(`(() => {
               const host = window.__orcaGrab && window.__orcaGrab.host
               if (!host) return 'not-armed'
+              if (typeof window.__orcaGrab.cancelAwait !== 'function') return 'not-awaiting'
               const r = document.getElementById('marker').getBoundingClientRect()
               const init = { bubbles: true, cancelable: true, clientX: r.x + 10, clientY: r.y + r.height / 2 }
               host.dispatchEvent(new MouseEvent('mousemove', init))
@@ -120,7 +121,28 @@ test('annotates an element of a client-hosted browser page', async ({ testRepoPa
       .toBe('clicked')
 
     const comment = client.page.getByPlaceholder('Describe what the agent should change here...')
-    await expect(comment).toBeVisible({ timeout: 15_000 })
+    try {
+      await expect(comment).toBeVisible({ timeout: 15_000 })
+    } catch (error) {
+      const diagnostic = await client.app.evaluate(async ({ webContents }, origin) => {
+        const guest = webContents
+          .getAllWebContents()
+          .find(
+            (contents) => contents.getType() === 'webview' && contents.getURL().startsWith(origin)
+          )
+        return guest?.executeJavaScript(`(() => {
+          const grab = window.__orcaGrab
+          return { armed: !!grab, awaiting: typeof grab?.cancelAwait === 'function',
+            display: grab?.host?.style.display, pointerEvents: grab?.host?.style.pointerEvents,
+            selected: !!document.querySelector('[data-orca-grab-selected]') }
+        })()`)
+      }, fixture.origin)
+      await testInfo.attach('annotation-picker-failure-state', {
+        body: JSON.stringify(diagnostic),
+        contentType: 'application/json'
+      })
+      throw error
+    }
     await testInfo.attach('client-hosted-annotation-card', {
       body: await client.page.screenshot({ path: testInfo.outputPath('annotation-card.png') }),
       contentType: 'image/png'
