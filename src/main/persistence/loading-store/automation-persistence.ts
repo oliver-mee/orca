@@ -19,12 +19,14 @@ import type {
   AutomationOwnerFenceOperation,
   AutomationOwnerPrecondition
 } from '../../../shared/automation-owner-precondition'
+import type { WorkspaceRunContext } from '../../../shared/task-source-context'
 import { getWorktreePathBasenameFromId } from '../../../shared/worktree/id'
 import { normalizeAutomationRunWorkspaceDisplayName } from '../scheduling-automations/automation-context-migration'
 import {
   createAutomation as createAutomationOperation,
   deleteAutomation as deleteAutomationOperation,
   listAutomations as listAutomationsOperation,
+  stampLegacyAutomationRunContext as stampLegacyAutomationRunContextOperation,
   updateAutomation as updateAutomationOperation,
   type AutomationDefinitionOperations
 } from '../scheduling-automations/automation-definition-operations'
@@ -154,6 +156,14 @@ export class AutomationPersistence {
     options?: { expectedOwner?: AutomationOwnerPrecondition; destination?: AutomationDestination }
   ): Automation {
     return updateAutomationOperation(getAutomationDefinitionOperations(this), id, updates, options)
+  }
+
+  stampLegacyAutomationRunContext(automationId: string, runContext: WorkspaceRunContext): boolean {
+    return stampLegacyAutomationRunContextOperation(
+      getAutomationDefinitionOperations(this),
+      automationId,
+      runContext
+    )
   }
 
   deleteAutomation(id: string, options?: { expectedOwner?: AutomationOwnerPrecondition }): void {

@@ -1,8 +1,4 @@
-import { isWebhookTriggerEnabled } from '../../shared/automation-webhook'
-import type {
-  AutomationWebhookDelivery,
-  WebhookServerEndpoint
-} from '../../shared/automations-types'
+import { getWebhookAutomationForDispatch } from './webhook-run-target'
 import {
   AutomationDispatchCancelledError,
   requestAutomationDispatch,
@@ -15,12 +11,15 @@ import {
   type Automation,
   type AutomationDispatchResult,
   type AutomationPrecheckResult,
-  type AutomationRun
+  type AutomationRun,
+  type AutomationWebhookDelivery,
+  type WebhookServerEndpoint
 } from '../../shared/automations-types'
 import type { ClaudeUsageStore } from '../claude-usage/store'
 import type { CodexUsageStore } from '../codex-usage/store'
 import { runStoredAutomationPrecheck } from './automation-run-precheck'
-import { resolveAutomationRunTarget, type AutomationRunTargetResult } from './run-target-resolution'
+import { captureLegacyRunTarget, resolveAutomationRunTarget } from './run-target-resolution'
+import type { AutomationRunTargetResult } from './run-target-resolution'
 import { writeAutomationRunUsage } from './run-usage-collection'
 import type { HeadlessAutomationDispatcher } from './headless-dispatch'
 import { runKeyedSerializedOperation } from '../cli/keyed-promise-queue'
@@ -157,13 +156,11 @@ export class AutomationService {
     delivery: AutomationWebhookDelivery
   ): Promise<AutomationRun> {
     const generation = this.dispatchGeneration
-    const automation = this.store.listAutomations().find((entry) => entry.id === automationId)
-    if (!automation) {
-      throw new Error('Automation not found.')
-    }
-    if (!isWebhookTriggerEnabled(automation)) {
-      throw new Error('Webhook trigger is not enabled for this automation.')
-    }
+    const automation = getWebhookAutomationForDispatch(
+      this.store,
+      automationId,
+      this.allowRemoteHostScheduling
+    )
     const target = this.resolveTarget(automation)
     const run = await this.runs.createRun(automation, Date.now(), 'webhook', delivery)
     return await this.requestDispatch(automation, run, target, generation)
@@ -171,10 +168,11 @@ export class AutomationService {
 
   async runNow(automationId: string): Promise<AutomationRun> {
     const generation = this.dispatchGeneration
-    const automation = this.store.listAutomations().find((entry) => entry.id === automationId)
-    if (!automation) {
+    const listed = this.store.listAutomations().find((entry) => entry.id === automationId)
+    if (!listed) {
       throw new Error('Automation not found.')
     }
+    const automation = captureLegacyRunTarget(this.store, listed, this.allowRemoteHostScheduling)
     const target = this.resolveTarget(automation)
     const run = await this.runs.createRun(automation, Date.now(), 'manual')
     return await this.requestDispatch(automation, run, target, generation)
@@ -263,8 +261,9 @@ export class AutomationService {
     }
   }
 
-  private async evaluateAutomation(automation: Automation, now: number): Promise<void> {
+  private async evaluateAutomation(listed: Automation, now: number): Promise<void> {
     const generation = this.dispatchGeneration
+    const automation = captureLegacyRunTarget(this.store, listed, this.allowRemoteHostScheduling)
     const scheduledFor = this.store.getLatestAutomationOccurrence(automation, now)
     if (scheduledFor === null) {
       await this.runs.advanceNextRun(automation.id, now)
