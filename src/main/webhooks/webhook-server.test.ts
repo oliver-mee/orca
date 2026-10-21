@@ -6,6 +6,7 @@ import type {
   AutomationRunStatus
 } from '../../shared/automations-types'
 import { WebhookServer } from './webhook-server'
+import { normalizeAutomationWebhookConfig } from '../../shared/automation-webhook'
 
 type TriggerFn = (
   automationId: string,
@@ -62,6 +63,20 @@ describe('WebhookServer', () => {
   afterEach(() => {
     server.stop()
   })
+
+  it.each(['token', 'hmac_sha256'] as const)(
+    'refuses empty %s verification at the real HTTP boundary',
+    async (secretMode) => {
+      for (const secret of ['', '   ', null]) {
+        automation = makeAutomation(
+          normalizeAutomationWebhookConfig({ enabled: true, secretMode, secret })
+        )
+        const response = await fetch(`${base}/webhook/auto-1`, { method: 'POST', body: 'payload' })
+        expect(response.status).toBe(401)
+        expect(triggerWebhook).not.toHaveBeenCalled()
+      }
+    }
+  )
 
   it('accepts a valid POST and triggers the automation', async () => {
     const res = await fetch(`${base}/webhook/auto-1`, {

@@ -5,6 +5,7 @@ export class WebhookRateLimiter {
   private readonly windowMs: number
   private readonly maxRequests: number
   private readonly hits = new Map<string, number[]>()
+  private lastPruneAt = Number.NEGATIVE_INFINITY
 
   constructor(opts: { windowMs?: number; maxRequests?: number } = {}) {
     this.windowMs = opts.windowMs ?? 60_000
@@ -14,6 +15,10 @@ export class WebhookRateLimiter {
   /** Record a request for `key` and report whether it is within the limit.
    *  `now` is injectable for deterministic tests. */
   tryAcquire(key: string, now: number = Date.now()): boolean {
+    if (now - this.lastPruneAt >= this.windowMs) {
+      this.lastPruneAt = now
+      this.prune(now)
+    }
     const windowStart = now - this.windowMs
     const recent = (this.hits.get(key) ?? []).filter((timestamp) => timestamp > windowStart)
     if (recent.length >= this.maxRequests) {
@@ -41,5 +46,6 @@ export class WebhookRateLimiter {
 
   reset(): void {
     this.hits.clear()
+    this.lastPruneAt = Number.NEGATIVE_INFINITY
   }
 }

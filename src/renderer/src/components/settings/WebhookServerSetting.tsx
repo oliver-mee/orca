@@ -18,6 +18,31 @@ export function WebhookServerSetting({
   updateSettings
 }: WebhookServerSettingProps): React.JSX.Element {
   const current = settings.webhookServer ?? getDefaultWebhookServerSettings()
+  const [bindDraft, setBindDraft] = React.useState(current.bindAddress)
+  const [portDraft, setPortDraft] = React.useState(String(current.port))
+  React.useEffect(() => setBindDraft(current.bindAddress), [current.bindAddress])
+  React.useEffect(() => setPortDraft(String(current.port)), [current.port])
+  const commitBind = (): void => {
+    const bindAddress = bindDraft.trim()
+    if (!bindAddress) {
+      setBindDraft(current.bindAddress)
+      return
+    }
+    setBindDraft(bindAddress)
+    if (bindAddress !== current.bindAddress) {
+      updateSettings({ webhookServer: { ...current, bindAddress } })
+    }
+  }
+  const commitPort = (): void => {
+    const port = Number(portDraft)
+    if (!portDraft.trim() || !Number.isInteger(port) || port < 1 || port > 65535) {
+      setPortDraft(String(current.port))
+      return
+    }
+    if (port !== current.port) {
+      updateSettings({ webhookServer: { ...current, port } })
+    }
+  }
   const [endpoint, setEndpoint] = React.useState<WebhookServerEndpoint | null>(null)
 
   // Why: surface the live listener state (bound host/port or a bind error like
@@ -44,8 +69,11 @@ export function WebhookServerSetting({
     }
   }, [current.enabled, current.bindAddress, current.port])
 
-  const title = 'Webhooks'
-  const description = 'Receive inbound webhooks that trigger automations.'
+  const title = translate('settings.webhooks.title', 'Webhooks')
+  const description = translate(
+    'settings.webhooks.description',
+    'Receive inbound webhooks that trigger automations.'
+  )
 
   return (
     <section className="space-y-3">
@@ -83,11 +111,16 @@ export function WebhookServerSetting({
               </Label>
               <Input
                 id="webhook-bind-address"
-                value={current.bindAddress}
+                value={bindDraft}
                 spellCheck={false}
-                onChange={(event) =>
-                  updateSettings({ webhookServer: { ...current, bindAddress: event.target.value } })
-                }
+                onChange={(event) => setBindDraft(event.target.value)}
+                onBlur={commitBind}
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter') {
+                    event.preventDefault()
+                    event.currentTarget.blur()
+                  }
+                }}
               />
               <p className="text-[11px] text-muted-foreground">
                 {translate(
@@ -105,11 +138,13 @@ export function WebhookServerSetting({
                 type="number"
                 min={1}
                 max={65535}
-                value={String(current.port)}
-                onChange={(event) => {
-                  const parsed = Number.parseInt(event.target.value, 10)
-                  if (Number.isFinite(parsed)) {
-                    updateSettings({ webhookServer: { ...current, port: parsed } })
+                value={portDraft}
+                onChange={(event) => setPortDraft(event.target.value)}
+                onBlur={commitPort}
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter') {
+                    event.preventDefault()
+                    event.currentTarget.blur()
                   }
                 }}
               />

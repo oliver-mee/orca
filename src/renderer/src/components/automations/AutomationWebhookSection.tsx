@@ -33,12 +33,21 @@ function resolveWebhookUrl(
   automationId: string | null
 ): { url: string | null; hint: string } {
   if (!automationId) {
-    return { url: null, hint: 'Save the automation to get its webhook URL.' }
+    return {
+      url: null,
+      hint: translate(
+        'automations.webhook.urlRequiresSave',
+        'Save the automation to get its webhook URL.'
+      )
+    }
   }
   if (!endpoint || !endpoint.running) {
     return {
       url: null,
-      hint: 'Enable the webhook receiver in Settings → Advanced to get a URL.'
+      hint: translate(
+        'automations.webhook.urlRequiresReceiver',
+        'Enable the webhook receiver in Settings → Advanced to get a URL.'
+      )
     }
   }
   // Why: a 0.0.0.0 bind has no usable host in a URL; show a placeholder the
@@ -54,8 +63,14 @@ function resolveWebhookUrl(
     url: `http://${host}:${endpoint.port}/webhook/${automationId}`,
     hint:
       endpoint.bindAddress === '0.0.0.0'
-        ? 'Replace YOUR-HOST with this machine’s address reachable by the sender.'
-        : 'Point your provider’s webhook at this URL (POST).'
+        ? translate(
+            'automations.webhook.urlReplaceHost',
+            'Replace YOUR-HOST with this machine’s address reachable by the sender.'
+          )
+        : translate(
+            'automations.webhook.urlProviderHint',
+            'Point your provider’s webhook at this URL (POST).'
+          )
   }
 }
 
@@ -89,7 +104,13 @@ export function AutomationWebhookSection({
   onGenerateSecret
 }: AutomationWebhookSectionProps): React.JSX.Element {
   const { url, hint } = remoteHost
-    ? { url: null, hint: 'Configure the receiver and copy its URL on the automation host.' }
+    ? {
+        url: null,
+        hint: translate(
+          'automations.webhook.urlOnHost',
+          'Configure the receiver and copy its URL on the automation host.'
+        )
+      }
     : resolveWebhookUrl(webhookEndpoint, automationId)
   const showSecret = (draft.webhookSecretMode ?? 'none') !== 'none'
 

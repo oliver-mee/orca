@@ -20,10 +20,10 @@ describe('normalizeAutomationWebhookConfig', () => {
     ).toEqual({ enabled: true, secretMode: 'none', secret: null })
   })
 
-  it('falls back to none when a verifying mode has no secret', () => {
+  it('keeps the verifying mode when a secret is missing', () => {
     expect(
       normalizeAutomationWebhookConfig({ enabled: true, secretMode: 'token', secret: '   ' })
-    ).toEqual({ enabled: true, secretMode: 'none', secret: null })
+    ).toEqual({ enabled: true, secretMode: 'token', secret: null })
   })
 
   it('keeps trimmed secret for token / hmac modes', () => {

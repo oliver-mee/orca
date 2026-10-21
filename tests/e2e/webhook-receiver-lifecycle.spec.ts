@@ -115,3 +115,54 @@ test('webhook settings display the actual receiver state after enabling', async 
     .poll(() => orcaPage.evaluate(() => window.api.automations.getWebhookEndpoint()))
     .toMatchObject({ running: false })
 })
+
+test('receiver bind fields stay draft until a validated blur or Enter commit', async ({
+  orcaPage
+}) => {
+  await waitForSessionReady(orcaPage)
+  const first = await unusedPort()
+  let second = await unusedPort()
+  while (second === first) {
+    second = await unusedPort()
+  }
+  await orcaPage.evaluate(async (port) => {
+    const settings = await window.api.settings.set({
+      webhookServer: { enabled: true, port, bindAddress: '127.0.0.1' }
+    })
+    const store = window.__store!
+    store.setState({ settings })
+    store.getState().openSettingsTarget({ pane: 'advanced', repoId: null })
+    store.getState().openSettingsPage()
+  }, first)
+  const announcement = orcaPage.getByRole('button', { name: 'Maybe Later', exact: true })
+  if (await announcement.isVisible().catch(() => false)) {
+    await announcement.click()
+  }
+  const portInput = orcaPage.getByLabel('Port', { exact: true })
+  await expect(portInput).toBeVisible()
+  await portInput.fill(String(second))
+  expect(
+    await orcaPage.evaluate(async () => (await window.api.settings.get()).webhookServer.port)
+  ).toBe(first)
+  await portInput.press('Enter')
+  await expect
+    .poll(() => orcaPage.evaluate(() => window.api.automations.getWebhookEndpoint()))
+    .toMatchObject({ running: true, bindAddress: '127.0.0.1', port: second, error: null })
+  await portInput.fill('')
+  await expect(portInput).toHaveValue('')
+  expect(
+    await orcaPage.evaluate(async () => (await window.api.settings.get()).webhookServer.port)
+  ).toBe(second)
+  await portInput.press('Tab')
+  await expect(portInput).toHaveValue(String(second))
+  const addressInput = orcaPage.getByLabel('Bind address', { exact: true })
+  await addressInput.fill('0')
+  expect(
+    await orcaPage.evaluate(async () => (await window.api.settings.get()).webhookServer.bindAddress)
+  ).toBe('127.0.0.1')
+  await addressInput.fill('127.0.0.1')
+  await addressInput.press('Tab')
+  await expect
+    .poll(() => orcaPage.evaluate(() => window.api.automations.getWebhookEndpoint()))
+    .toMatchObject({ running: true, bindAddress: '127.0.0.1', port: second, error: null })
+})

@@ -19,10 +19,7 @@ function isSecretMode(value: unknown): value is AutomationWebhookSecretMode {
   return typeof value === 'string' && SECRET_MODES.some((mode) => mode === value)
 }
 
-/** Normalize untrusted webhook config from create/update inputs into a stored
- *  shape, or null when webhooks are not configured. A 'none' secret mode drops
- *  any secret; 'token'/'hmac_sha256' without a secret fall back to 'none' so a
- *  half-configured automation never claims to verify when it cannot. */
+/** Preserve requested verification modes so missing secrets fail closed. */
 export function normalizeAutomationWebhookConfig(
   input: AutomationWebhookConfig | null | undefined
 ): AutomationWebhookConfig | null {
@@ -32,10 +29,10 @@ export function normalizeAutomationWebhookConfig(
   const enabled = input.enabled === true
   const secretMode = isSecretMode(input.secretMode) ? input.secretMode : 'none'
   const secretRaw = typeof input.secret === 'string' ? input.secret.trim() : ''
-  if (secretMode === 'none' || secretRaw.length === 0) {
+  if (secretMode === 'none') {
     return { enabled, secretMode: 'none', secret: null }
   }
-  return { enabled, secretMode, secret: secretRaw }
+  return { enabled, secretMode, secret: secretRaw.length > 0 ? secretRaw : null }
 }
 
 /** True when the automation has a webhook trigger turned on. */
@@ -79,6 +76,8 @@ export function composeAutomationDispatchPrompt(
   // cannot close the wrapper tag early and inject instructions into the prompt.
   const boundary = `webhook-payload-${run.id}`
   const truncatedNote = delivery.truncated ? ' truncated="true"' : ''
-  const block = `<${boundary}${truncatedNote}>\n${delivery.body}\n</${boundary}>`
+  // oxlint-disable-next-line no-control-regex -- Untrusted bytes reach raw PTY startup paths; preserve only newline/tab controls.
+  const safeBody = delivery.body.replace(/[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/g, '')
+  const block = `<${boundary}${truncatedNote}>\n${safeBody}\n</${boundary}>`
   return base.length > 0 ? `${base}\n\n${block}` : block
 }

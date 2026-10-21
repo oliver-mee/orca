@@ -32,3 +32,18 @@ describe('WebhookRateLimiter', () => {
     expect(limiter.tryAcquire('a', 2001)).toBe(true)
   })
 })
+
+it('expires rotated source addresses during acquisition without stopping the receiver', () => {
+  const limiter = new WebhookRateLimiter({ windowMs: 1000, maxRequests: 1 })
+  for (let n = 0; n < 20; n += 1) {
+    expect(limiter.tryAcquire(`expired-${n}`, 0)).toBe(true)
+  }
+  expect(limiter.tryAcquire('active', 1001)).toBe(true)
+  const tracked: unknown = Reflect.get(limiter, 'hits')
+  expect(tracked).toBeInstanceOf(Map)
+  if (!(tracked instanceof Map)) {
+    throw new Error('rate limiter tracking unavailable')
+  }
+  expect(tracked.size).toBe(1)
+  expect(limiter.tryAcquire('active', 1002)).toBe(false)
+})
