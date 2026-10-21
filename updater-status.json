@@ -1,0 +1,67 @@
+{
+  "sourceCommit": "a645c55013055c5679fd3fff33edacafb000db74",
+  "boundary": "test-only packaged-context Linux ARM64 Electron runtime and built CLI; release-feed responses substituted",
+  "scenarios": [
+    {
+      "scenario": "ready",
+      "packagedContext": true,
+      "support": {
+        "installMode": "unsupported-headless-serve",
+        "automatic": false,
+        "reason": "manual-service-update-required",
+        "manualUpdate": {
+          "method": "unknown",
+          "check": "update-available",
+          "currentVersion": "1.4.214",
+          "latestVersion": "99.0.0",
+          "releaseUrl": "https://github.com/stablyai/orca/releases/tag/v99.0.0",
+          "steps": [
+            "Download the release for this machine's architecture from https://github.com/stablyai/orca/releases/tag/v99.0.0",
+            "Follow the documented upgrade procedure for this install: https://github.com/stablyai/orca/blob/main/docs/reference/manual-serve-updates.md#upgrade",
+            "Restart the service unit that runs `orca serve`. Orca does not restart itself: nothing here can prove exactly one replacement would start."
+          ],
+          "documentationUrl": "https://github.com/stablyai/orca/blob/main/docs/reference/manual-serve-updates.md#upgrade"
+        }
+      },
+      "passed": true
+    },
+    {
+      "scenario": "unavailable",
+      "packagedContext": true,
+      "support": {
+        "installMode": "unsupported-headless-serve",
+        "automatic": false,
+        "reason": "manual-service-update-required",
+        "manualUpdate": {
+          "method": "unknown",
+          "check": "unavailable",
+          "currentVersion": "1.4.214",
+          "latestVersion": null,
+          "releaseUrl": null,
+          "steps": [],
+          "documentationUrl": "https://github.com/stablyai/orca/blob/main/docs/reference/manual-serve-updates.md#upgrade"
+        }
+      },
+      "passed": true
+    },
+    {
+      "scenario": "disabled",
+      "packagedContext": true,
+      "support": {
+        "installMode": "unsupported-headless-serve",
+        "automatic": false,
+        "reason": "manual-service-update-required",
+        "manualUpdate": {
+          "method": "unknown",
+          "check": "disabled",
+          "currentVersion": "1.4.214",
+          "latestVersion": null,
+          "releaseUrl": null,
+          "steps": [],
+          "documentationUrl": "https://github.com/stablyai/orca/blob/main/docs/reference/manual-serve-updates.md#upgrade"
+        }
+      },
+      "passed": true
+    }
+  ]
+}
