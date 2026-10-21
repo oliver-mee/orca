@@ -9,7 +9,7 @@ and do not start this manual reporter.
 
 The reporter starts after readiness and checks daily through Orca's existing
 release feed and asset-readiness probes. Set `ORCA_SERVE_DISABLE_UPDATE_CHECK=1`
-to disable this reporter's outbound checks, not the native updater. `disabled`,
+or `true` to disable this reporter's outbound checks, not the native updater. Values are case-insensitive and surrounding whitespace is ignored. Other values, including `0` and `false`, leave checks enabled. `disabled`,
 `pending`, and `unavailable` do not mean current. Failed or not-ready checks clear
 any previous release target and instructions. Only `update-available` carries them.
 

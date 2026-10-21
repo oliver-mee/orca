@@ -77,6 +77,30 @@ describe('serve manual update report', () => {
     delete process.env[SERVE_DISABLE_UPDATE_CHECK_ENV]
   })
 
+  it.each(['0', 'false', ' FALSE ', ' 0 '])(
+    'keeps checks enabled for opt-out value %s',
+    async (value) => {
+      process.env[SERVE_DISABLE_UPDATE_CHECK_ENV] = value
+      await startServeManualUpdateReporting({ installMode: 'unsupported-headless-serve' })
+      expect(fetchNewerReleaseTagsWithReadinessMock).toHaveBeenCalledTimes(1)
+      expect(getServeManualUpdateReport()).toMatchObject({
+        check: 'update-available',
+        latestVersion: '1.4.200'
+      })
+    }
+  )
+
+  it.each(['true', ' TRUE '])('disables checks for explicit opt-out value %s', async (value) => {
+    process.env[SERVE_DISABLE_UPDATE_CHECK_ENV] = value
+    await startServeManualUpdateReporting({ installMode: 'unsupported-headless-serve' })
+    expect(fetchNewerReleaseTagsWithReadinessMock).not.toHaveBeenCalled()
+    expect(getServeManualUpdateReport()).toMatchObject({
+      check: 'disabled',
+      latestVersion: null,
+      steps: []
+    })
+  })
+
   it('reports nothing until a host starts the contract', () => {
     expect(getServeManualUpdateReport()).toBeNull()
   })

@@ -187,7 +187,8 @@ export function startServeManualUpdateReporting(options: {
     lastAnnouncedVersion: null,
     cachedSteps: null
   }
-  if (process.env[SERVE_DISABLE_UPDATE_CHECK_ENV]) {
+  const disableValue = process.env[SERVE_DISABLE_UPDATE_CHECK_ENV]?.trim().toLowerCase()
+  if (disableValue === '1' || disableValue === 'true') {
     reportState.check = 'disabled'
     return Promise.resolve()
   }
