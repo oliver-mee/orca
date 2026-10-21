@@ -148,6 +148,9 @@ test('receiver bind fields stay draft until a validated blur or Enter commit', a
   await expect
     .poll(() => orcaPage.evaluate(() => window.api.automations.getWebhookEndpoint()))
     .toMatchObject({ running: true, bindAddress: '127.0.0.1', port: second, error: null })
+  await expect(
+    orcaPage.getByText(`Listening on 127.0.0.1:${second}.`, { exact: true })
+  ).toBeVisible()
   await portInput.fill('')
   await expect(portInput).toHaveValue('')
   expect(
