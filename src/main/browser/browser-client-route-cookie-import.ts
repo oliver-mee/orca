@@ -7,9 +7,9 @@ import {
   detectInstalledBrowsers,
   importCookiesFromBrowser,
   importCookiesFromFile,
-  selectBrowserProfile,
-  type DetectedBrowser
-} from './browser-cookie-import'
+  selectBrowserProfile
+} from './cookies/browser-cookie-import'
+import type { DetectedBrowser } from './cookies/sources/browser-cookie-detection-types'
 import { recordClientRouteCookieImportSource } from './client-route-cookie-import-source-store'
 import { currentBrowserRoutePartitionBindingStore } from './browser-route-partition-binding-runtime'
 import { resolveBrowserRoutePartitionBinding } from './browser-route-partition-migration'
@@ -23,14 +23,7 @@ export type ClientRouteCookieImportRequest = {
   browserProfile?: string
 }
 
-/**
- * Imports desktop-browser cookies into the client-hosted route partition of a
- * paired server, or null when that server's pages are not client-hosted and the
- * caller should fall through to the server-side import RPC.
- *
- * The renderer names an environment and a browser session profile; main derives
- * and validates the partition, so no caller can address storage directly.
- */
+/** Main derives the destination partition; null delegates to the server-side import RPC. */
 export async function importCookiesIntoClientRoutePartition(
   request: ClientRouteCookieImportRequest
 ): Promise<BrowserCookieImportResult | null> {
@@ -118,9 +111,7 @@ async function runClientRouteCookieImport(
   if (!result.ok) {
     return result
   }
-  // Why: per-environment, not the local registry — the badge must describe the jar
-  // that received the cookies (this desktop's route partition for THIS server),
-  // never the local profile jar the import deliberately bypassed.
+  // Badge this desktop’s server-route jar, rather than the local profile jar.
   recordClientRouteCookieImportSource({
     environmentId: request.environmentId,
     profileId: request.browserProfileId,
@@ -158,6 +149,12 @@ function bindRoutePartition(
       authorityConnectionIdentity: routeIdentity.authorityConnectionIdentity,
       executionHostIdentity: routeIdentity.executionHostIdentity
     },
+    compatibleIdentity: {
+      orcaProfileId: routeIdentity.orcaProfileId,
+      browserProfileId,
+      authorityConnectionIdentity: routeIdentity.pairingAuthorityConnectionIdentity,
+      executionHostIdentity: routeIdentity.executionHostIdentity
+    },
     legacyIdentity: {
       orcaProfileId: routeIdentity.orcaProfileId,
       browserProfileId,
@@ -175,7 +172,12 @@ function bindRoutePartition(
   }
   const persisted = bindings.get(derived.partition)
   if (persisted === null) {
-    bindings.set(derived.partition, derived.bindingFingerprint, routeIdentity.storageScope)
+    bindings.set(
+      derived.partition,
+      derived.bindingFingerprint,
+      routeIdentity.storageScope,
+      derived.aliasFingerprint
+    )
   } else if (persisted !== derived.bindingFingerprint) {
     throw new Error('browser_route_partition_binding_conflict')
   }
@@ -185,7 +187,7 @@ function bindRoutePartition(
 function resolveImportSource(
   request: ClientRouteCookieImportRequest
 ): { source: DetectedBrowser } | { ok: false; reason: string } {
-  // Why: browserProfile reaches a filesystem path, so reject traversal before use.
+  // Profile names become filesystem path segments.
   if (
     request.browserProfile &&
     (/[/\\]/.test(request.browserProfile) || request.browserProfile.includes('..'))

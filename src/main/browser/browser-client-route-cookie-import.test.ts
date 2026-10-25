@@ -30,7 +30,7 @@ const {
   selectBrowserProfileMock: vi.fn()
 }))
 
-vi.mock('./browser-cookie-import', () => ({
+vi.mock('./cookies/browser-cookie-import', () => ({
   detectInstalledBrowsers: detectInstalledBrowsersMock,
   importCookiesFromBrowser: importCookiesFromBrowserMock,
   importCookiesFromFile: importCookiesFromFileMock,
@@ -62,12 +62,12 @@ const routeIdentity = {
   orcaProfileId: 'orca-profile-a',
   authorityConnectionIdentity: 'paired-runtime:authority-a',
   executionHostIdentity: 'execution-host-a',
+  pairingAuthorityConnectionIdentity: 'paired-runtime:pairing-authority-a',
   legacyAuthorityConnectionIdentity: 'paired-runtime:legacy-authority-a',
   legacyExecutionHostIdentity: 'legacy-execution-host-a',
   storageScope: 'e'.repeat(64)
 }
 
-/** The same server after a re-pair: a different durable identity, so a different partition. */
 const repairedRouteIdentity = {
   ...routeIdentity,
   authorityConnectionIdentity: 'paired-runtime:authority-b'
@@ -108,7 +108,8 @@ describe('importCookiesIntoClientRoutePartition', () => {
     expect(bindingStore.set).toHaveBeenCalledWith(
       partition,
       expect.stringMatching(/^[a-f0-9]{64}$/),
-      routeIdentity.storageScope
+      routeIdentity.storageScope,
+      expect.stringMatching(/^[a-f0-9]{64}$/)
     )
     expect(recordClientRouteImportSourceMock).toHaveBeenCalledWith({
       environmentId: 'env-a',
@@ -165,8 +166,7 @@ describe('importCookiesIntoClientRoutePartition', () => {
     expect(recordClientRouteImportSourceMock).not.toHaveBeenCalled()
   })
 
-  // Why: the import takes seconds; a host replacement inside that window retargets the route, so
-  // reporting success would badge a partition none of the user's client-hosted tabs read from.
+  // A replacement during import must not report success for an abandoned partition.
   it('fails the import when the server is re-paired mid-import', async () => {
     getRouteIdentityMock.mockReturnValueOnce(routeIdentity).mockReturnValue(repairedRouteIdentity)
 
@@ -192,10 +192,10 @@ describe('importCookiesIntoClientRoutePartition', () => {
     expect(recordClientRouteImportSourceMock).not.toHaveBeenCalled()
   })
 
-  // Why: the durable identity outlives a remote restart, so a reconnect must not fail the import.
   it('still succeeds when only the authority runtime id changed during the import', async () => {
     getRouteIdentityMock.mockReturnValueOnce(routeIdentity).mockReturnValue({
       ...routeIdentity,
+      pairingAuthorityConnectionIdentity: 'paired-runtime:pairing-authority-restarted',
       legacyAuthorityConnectionIdentity: 'paired-runtime:legacy-authority-restarted',
       legacyExecutionHostIdentity: 'legacy-execution-host-restarted'
     })
