@@ -12,10 +12,7 @@ vi.mock('node:fs', () => ({
   }
 }))
 
-import {
-  WINDOWS_RUNTIME_FILE_WATCH_REFRESH_MS,
-  watchWindowsRuntimeFileExplorer
-} from './windows-file-watch'
+import { watchWindowsRuntimeFileExplorer } from './windows-file-watch'
 
 describe('watchWindowsRuntimeFileExplorer', () => {
   beforeEach(() => {
@@ -34,7 +31,24 @@ describe('watchWindowsRuntimeFileExplorer', () => {
       vi.advanceTimersByTime(50)
     }
     // One whole-tree refresh per window, not one per raw event.
-    expect(callback).toHaveBeenCalledTimes(2_000 / WINDOWS_RUNTIME_FILE_WATCH_REFRESH_MS)
+    expect(callback).toHaveBeenCalledTimes(4)
     expect(callback).toHaveBeenCalledWith([{ kind: 'overflow', absolutePath: 'C:\\repo' }])
+  })
+
+  it('refreshes a one-off save after a quiet period on the short leading delay', () => {
+    const callback = vi.fn()
+    watchWindowsRuntimeFileExplorer('C:\\repo', callback, vi.fn())
+    fsWatch.listener?.()
+    vi.advanceTimersByTime(149)
+    expect(callback).not.toHaveBeenCalled()
+    vi.advanceTimersByTime(1)
+    expect(callback).toHaveBeenCalledTimes(1)
+
+    // A change right after that refresh waits out the steady interval.
+    fsWatch.listener?.()
+    vi.advanceTimersByTime(499)
+    expect(callback).toHaveBeenCalledTimes(1)
+    vi.advanceTimersByTime(1)
+    expect(callback).toHaveBeenCalledTimes(2)
   })
 })

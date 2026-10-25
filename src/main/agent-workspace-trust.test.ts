@@ -77,7 +77,6 @@ describe('applyAgentWorkspaceTrust on this machine', () => {
     ['cursor', mocks.cursor],
     ['copilot', mocks.copilot],
     ['qoder', mocks.qoder],
-    // Why: one of the old copied switches omitted Antigravity, so workers launched there asked.
     ['antigravity', mocks.antigravity]
   ] as const)('writes the %s preset for the workspace', async (preset, writer) => {
     await expect(applyAgentWorkspaceTrust(preset, WORKSPACE, local)).resolves.toEqual({})
@@ -88,11 +87,18 @@ describe('applyAgentWorkspaceTrust on this machine', () => {
   })
 
   it('writes per-user trust under the home the launch env names, where the agent reads it', async () => {
-    const context = { ...local, env: { HOME: '/home/agent', USERPROFILE: '/home/agent' } }
+    const context = {
+      ...local,
+      env: { HOME: '/home/agent', USERPROFILE: '/home/agent' },
+      codexHome: '/orca/codex-accounts/acct-1/home'
+    }
     for (const preset of ['codex', 'cursor', 'copilot', 'qoder', 'antigravity'] as const) {
       await applyAgentWorkspaceTrust(preset, WORKSPACE, context)
     }
-    expect(mocks.codexConfigFiles).toHaveBeenCalledWith('/home/agent')
+    expect(mocks.codexConfigFiles).toHaveBeenCalledWith(
+      '/home/agent',
+      '/orca/codex-accounts/acct-1/home'
+    )
     for (const writer of [mocks.cursor, mocks.copilot, mocks.qoder, mocks.antigravity]) {
       expect(writer).toHaveBeenCalledWith(WORKSPACE, '/home/agent')
     }
@@ -128,7 +134,7 @@ describe('applyAgentWorkspaceTrust on this machine', () => {
     warn.mockRestore()
   })
 
-  // Why: a config dir that does not exist keeps a regression here from writing a real config.
+  // A nonexistent config directory prevents this test from modifying real Claude config.
   const noConfig = { ...local, env: { CLAUDE_CONFIG_DIR: join(tmpdir(), 'orca-no-claude-config') } }
   it.each([
     ['the home folder', homedir(), noConfig],

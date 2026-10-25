@@ -1,34 +1,33 @@
-import type {
-  BrowserCertificateFailure,
-  BrowserPage
-} from '../../../../shared/browser-workspace-types'
-import { toHttpsRecoveryUrl } from '../../../../shared/browser-url'
-import { toDisplayUrl } from './describe-page/browser-page-url-display'
+import { useAppStore } from '@/store'
+import type { BrowserPage as BrowserPageState } from '../../../../shared/browser-workspace-types'
 import { BrowserLoadFailureOverlay } from './navigate/browser-load-failure-overlay'
+import { getOpenableExternalUrl, toDisplayUrl } from './describe-page/browser-page-url-display'
 
+/** A client-hosted page's failure page; its Retry and auto-retry re-attempt the load in the local guest. */
 export function ClientHostedBrowserLoadFailure({
-  visible,
   browserTab,
-  failedNavigationUrl,
-  certificateFailure,
-  onRetry,
-  navigateToUrl
+  isActive,
+  onRetry
 }: {
-  visible: boolean
-  browserTab: BrowserPage
-  failedNavigationUrl: string
-  certificateFailure: BrowserCertificateFailure | null
+  browserTab: BrowserPageState
+  isActive: boolean
   onRetry: () => void
-  navigateToUrl: (url: string) => void
 }): React.JSX.Element | null {
-  return visible && browserTab.loadError ? (
+  const certificateFailure = useAppStore(
+    (s) => s.browserCertificateFailuresByPageId[browserTab.id] ?? null
+  )
+  if (!browserTab.loadError) {
+    return null
+  }
+  // Why: name the URL that failed, not the page still loaded behind it.
+  const failedNavigationUrl = browserTab.loadError.validatedUrl ?? toDisplayUrl(browserTab.url)
+  return (
     <BrowserLoadFailureOverlay
       loadError={browserTab.loadError}
-      currentUrl={toDisplayUrl(failedNavigationUrl)}
-      httpsRecoveryUrl={toHttpsRecoveryUrl(failedNavigationUrl)}
-      onRetry={() => onRetry()}
-      onTryHttps={navigateToUrl}
-      onCopy={(url) => void window.api.ui.writeClipboardText(url)}
+      onRetry={onRetry}
+      autoRetry={{ active: isActive, loading: browserTab.loading }}
+      onOpenExternal={(url) => void window.api.shell.openUrl(url)}
+      externalUrl={getOpenableExternalUrl(failedNavigationUrl)}
       certificateFailure={certificateFailure}
       expectedBrowserPageId={browserTab.id}
       // Why: the guest is a local Electron webview on this desktop, so its certificate
@@ -40,5 +39,5 @@ export function ClientHostedBrowserLoadFailure({
         })
       }
     />
-  ) : null
+  )
 }
