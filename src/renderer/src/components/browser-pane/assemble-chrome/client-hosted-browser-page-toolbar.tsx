@@ -103,6 +103,7 @@ export function ClientHostedBrowserPageToolbar({
   canGoBack,
   canGoForward,
   loading,
+  loadFailed,
   webviewRef,
   reload,
   navigate,
@@ -119,8 +120,13 @@ export function ClientHostedBrowserPageToolbar({
   canGoBack: boolean
   canGoForward: boolean
   loading: boolean
+  loadFailed: boolean
   webviewRef: React.RefObject<Electron.WebviewTag | null>
-  reload: { runReloadTrigger: (trigger: BrowserReloadTrigger) => void; reloadButtonLabel: string }
+  reload: {
+    runReloadTrigger: (trigger: BrowserReloadTrigger) => void
+    reloadButtonLabel: string
+    reloadButtonLabelKind: string
+  }
   navigate: (url: string) => void
   addressBarValue: string
   onAddressBarChange: (value: string) => void
@@ -161,7 +167,6 @@ export function ClientHostedBrowserPageToolbar({
       controls={{
         canGoBack,
         canGoForward,
-        loading,
         goBack: () => webviewRef.current?.goBack(),
         goForward: () => webviewRef.current?.goForward(),
         reload: () => reload.runReloadTrigger('button'),
@@ -169,6 +174,9 @@ export function ClientHostedBrowserPageToolbar({
       }}
       addressSlot={
         <BrowserAddressBar
+          pageId={browserPageId}
+          loading={loading}
+          loadFailed={loadFailed}
           value={addressBarValue}
           onChange={onAddressBarChange}
           onSubmit={() => navigate(addressBarValue)}
@@ -187,6 +195,7 @@ export function ClientHostedBrowserPageToolbar({
         />
       }
       reloadLabel={reload.reloadButtonLabel}
+      reloadShowsStop={reload.reloadButtonLabelKind === 'stop'}
       elementTools={elementTools}
       markup={markup}
       viewSource={{

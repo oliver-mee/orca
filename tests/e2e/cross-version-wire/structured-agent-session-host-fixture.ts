@@ -83,6 +83,7 @@ export function structuredHostStub(
       agent: 'codex' as const,
       readable: true
     })),
+    regenerateConversationName: vi.fn(() => true),
     hold: vi.fn(async () => undefined),
     release: vi.fn(() => undefined),
     respondToPrompt: vi.fn(async () => ({ ok: true, replayed: false })),
@@ -183,6 +184,7 @@ export function readyCodexProviderAdapter(input: {
   host: () => StructuredAgentSessionHost
 }): StructuredAgentSessionAdapter {
   const { store, now } = input
+  let dispatched = 0
   return startsWhenPublished(
     {
       acquire: async ({ fence }) => ({
@@ -201,7 +203,18 @@ export function readyCodexProviderAdapter(input: {
           observedAt: now
         }
       }),
-      dispatch: async () => ({ state: 'accepted' }),
+      dispatch: async () => {
+        dispatched += 1
+        return {
+          state: 'accepted',
+          providerIdentity: {
+            provider: 'codex',
+            threadId: input.thread,
+            turnId: `turn-${dispatched}`,
+            ordinal: dispatched
+          }
+        }
+      },
       cancelTurn: async () => ({ cancelled: true }),
       answerPrompt: async () => undefined,
       setOption: async () => undefined

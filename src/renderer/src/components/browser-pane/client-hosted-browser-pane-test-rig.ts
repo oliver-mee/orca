@@ -46,6 +46,7 @@ export function installClientHostedPaneApi(overrides?: {
         onPermissionDenied: inert,
         onContextMenuRequested: inert,
         onContextMenuDismissed: inert,
+        onTargetUrlChanged: inert,
         openDevTools: vi.fn(async () => true),
         setViewportOverride: vi.fn(async () => true),
         proceedCertificate: vi.fn(async () => ({ ok: true })),
@@ -59,6 +60,7 @@ export function installClientHostedPaneApi(overrides?: {
       },
       ui: {
         onFocusBrowserAddressBar: inert,
+        onShowBrowserHistory: inert,
         onFindInBrowserPage: inert,
         onBrowserHistoryNavigate: inert,
         onReloadBrowserPage: inert,

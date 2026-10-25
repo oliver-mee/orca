@@ -19,6 +19,7 @@ import { useWorkspaceSpaceDecisionProjection } from './use-workspace-space-decis
 import { useWorkspaceSpaceGitRefreshAction } from './use-workspace-space-git-refresh-action'
 import { useWorkspaceSpaceManagerProjection } from './use-workspace-space-manager-projection'
 import { getWorkspaceSpaceWorktreeIdentity } from './workspace-space-delete-selection'
+import { blockRemovalForUnsavedFiles } from '../sidebar/removal-unsaved-files'
 
 export function useWorkspaceSpaceManagerPanel() {
   const bindings = useWorkspaceSpaceManagerBindings()
@@ -150,8 +151,12 @@ export function useWorkspaceSpaceManagerPanel() {
         }
       )
     },
-    // oxlint-disable-next-line react-hooks/exhaustive-deps -- Extracted state setters keep their original stable identities.
-    [removeWorkspaceSpaceWorktrees]
+    [
+      removeWorkspaceSpaceWorktrees,
+      setInspectedWorktreeId,
+      setSelectedIds,
+      setTreemapZoomWorktreeId
+    ]
   )
 
   const deleteWorktrees = useCallback(
@@ -198,6 +203,16 @@ export function useWorkspaceSpaceManagerPanel() {
         worktree.worktreeId,
         worktree.executionHostId ?? undefined
       )
+      // Why: this retry has no list of its own, so edits made since the first attempt refuse it.
+      if (
+        blockRemovalForUnsavedFiles(
+          useAppStore.getState,
+          [{ id: worktree.worktreeId, hostId: worktree.executionHostId ?? undefined }],
+          worktree.displayName
+        )
+      ) {
+        return
+      }
       // Why (#11960): explicit force recovery, so it may also waive PTY-stop proof.
       void removeWorktree(
         { id: worktree.worktreeId, executionHostId: worktree.executionHostId ?? null },

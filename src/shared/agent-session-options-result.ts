@@ -1,5 +1,5 @@
 import type { AgentJournalCursor, AgentJournalThreadGoal } from './agent-session-journal-types'
-import type { AgentSessionConversationCommand } from './agent-session-conversation-command'
+import type { AgentSessionConversationCommand } from './agent-session/agent-session-conversation-command'
 import type { AgentSessionContextUsage } from './agent-session-context-usage'
 import type { AgentSessionRewindSupport } from './agent-session-rewind'
 import type {
@@ -50,5 +50,8 @@ export type AgentSessionOptionsResult = {
      * treating the value as unconfirmed, which is what it was before.
      */
     confirmed?: readonly string[]
+    /** Values a catalog default supplied, not the chat's intent or its provider's report. Absent
+     *  from an older host, whose answer a client reads as it always has. */
+    defaulted?: readonly ('model' | 'effort')[]
   }
 }
