@@ -152,7 +152,7 @@ function finishPointerWriteAndStageEnter<TWaiter extends OrchestrationMessageWai
         isCursorAgentTitle
       )
     ) {
-      db.markAsDelivered(flight.stagedMessageIds)
+      db.markAsDelivered(flight.stagedMessageIds, args.mailboxHandle)
       args.state.clearWatermark(args.mailboxHandle, args.newestSequence, ptyId)
       args.redrive(args.mailboxHandle)
       return
@@ -166,6 +166,7 @@ function finishPointerWriteAndStageEnter<TWaiter extends OrchestrationMessageWai
           resolveSubmitTarget: args.deps.resolveSubmitTarget,
           getMessageWaiters: args.deps.getMessageWaiters,
           isLeafPtyProvenAbsent: args.deps.isLeafPtyProvenAbsent,
+          isPtyAwaitingUserInput: args.deps.isPtyAwaitingUserInput,
           writePty: args.deps.writePty,
           settle: args.settle,
           redrive: args.redrive

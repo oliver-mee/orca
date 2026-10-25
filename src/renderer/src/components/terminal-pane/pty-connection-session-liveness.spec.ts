@@ -1,5 +1,6 @@
 import { bindPtyConnectionTestMocks } from './pty-connection-mocks.spec'
-import { layoutApplyTestTransport } from '@/runtime/layout-apply-test-transport.test-fixture'
+import { ORCA_LAYOUT_OWNER_IS_MAIN } from '../../../../shared/layout-owner-switch'
+import { expectMainFrameClosesExitedSplitPaneOnce } from './pty-connection-test-exited-split-pane-close'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { flushAsyncTicks } from './pty-connection-test-async'
 import { sendTerminalInputThroughPane } from './pty-connection-test-dom'
@@ -21,6 +22,7 @@ import {
   installTerminalTestGlobals,
   restoreTerminalTestGlobals
 } from './pty-connection-test-environment'
+import { mockPanePtyArgs } from './pty-connection-test-connect-mock-pane'
 
 export function registerPtyConnectionSessionLivenessTests(): void {
   let mockStoreState: StoreState
@@ -100,14 +102,19 @@ export function registerPtyConnectionSessionLivenessTests(): void {
         })
         const hasPty = vi.fn(async () => false)
 
-        const binding = connectPanePty(createPane(2) as never, manager as never, deps as never)
+        const binding = connectPanePty(...mockPanePtyArgs(createPane(2), manager, deps))
         capturedDataCallback.current?.('shell prompt')
 
         binding.reconcileIfSessionMissing(hasPty)
         await flushAsyncTicks()
 
         expect(hasPty).toHaveBeenCalledWith('pty-pane-2')
-        expect(manager.closePane).toHaveBeenCalledWith(2)
+        // Switch on: the host's authoritative absence is a confirmed end; main closes, the frame shows it.
+        if (ORCA_LAYOUT_OWNER_IS_MAIN) {
+          await expectMainFrameClosesExitedSplitPaneOnce(manager)
+        } else {
+          expect(manager.closePane).toHaveBeenCalledWith(2)
+        }
       })
 
       it('does not close when targeted liveness is live or unknown', async () => {
@@ -120,7 +127,7 @@ export function registerPtyConnectionSessionLivenessTests(): void {
           paneTransportsRef: { current: new Map([[1, createMockTransport('pty-pane-1')]]) }
         })
 
-        const binding = connectPanePty(createPane(2) as never, manager as never, deps as never)
+        const binding = connectPanePty(...mockPanePtyArgs(createPane(2), manager, deps))
 
         binding.reconcileIfSessionMissing(vi.fn(async () => true))
         binding.reconcileIfSessionMissing(vi.fn(async () => null))
@@ -149,7 +156,7 @@ export function registerPtyConnectionSessionLivenessTests(): void {
           paneTransportsRef: { current: new Map([[1, createMockTransport('pty-pane-1')]]) }
         })
 
-        const binding = connectPanePty(createPane(2) as never, manager as never, deps as never)
+        const binding = connectPanePty(...mockPanePtyArgs(createPane(2), manager, deps))
         binding.reconcileIfSessionMissing(hasPty)
         transport.getPtyId.mockReturnValue('pty-pane-2-reattached')
         resolveHasPty(false)
@@ -177,7 +184,7 @@ export function registerPtyConnectionSessionLivenessTests(): void {
           paneTransportsRef: { current: new Map([[1, createMockTransport('pty-pane-1')]]) }
         })
 
-        const binding = connectPanePty(createPane(2) as never, manager as never, deps as never)
+        const binding = connectPanePty(...mockPanePtyArgs(createPane(2), manager, deps))
         // Why: clear the freshly-split early-return guard so the only remaining protection is the freshness guard under test.
         capturedDataCallback.current?.('shell prompt')
         const onPtySpawn = createdTransportOptions[0]?.onPtySpawn as
@@ -214,7 +221,7 @@ export function registerPtyConnectionSessionLivenessTests(): void {
           paneTransportsRef: { current: new Map([[1, createMockTransport('pty-pane-1')]]) }
         })
 
-        const binding = connectPanePty(createPane(2) as never, manager as never, deps as never)
+        const binding = connectPanePty(...mockPanePtyArgs(createPane(2), manager, deps))
         // Why: clear the freshly-split early-return guard so onExit reaches close.
         capturedDataCallback.current?.('shell prompt')
         const onPtySpawn = createdTransportOptions[0]?.onPtySpawn as
@@ -229,7 +236,11 @@ export function registerPtyConnectionSessionLivenessTests(): void {
         binding.reconcileIfSessionMissing(async () => false, afterSpawn + 1)
         await flushAsyncTicks()
 
-        expect(manager.closePane).toHaveBeenCalledWith(2)
+        if (ORCA_LAYOUT_OWNER_IS_MAIN) {
+          await expectMainFrameClosesExitedSplitPaneOnce(manager)
+        } else {
+          expect(manager.closePane).toHaveBeenCalledWith(2)
+        }
       })
 
       it('routes the last pane through onPtyExitRef when its session is dead', async () => {
@@ -239,7 +250,7 @@ export function registerPtyConnectionSessionLivenessTests(): void {
         const manager = createManager(1)
         const deps = createDeps()
 
-        const binding = connectPanePty(createPane(1) as never, manager as never, deps as never)
+        const binding = connectPanePty(...mockPanePtyArgs(createPane(1), manager, deps))
 
         // The last pane reattaches to the tab's persisted ptyId ('tab-pty'); let that bind first.
         await flushAsyncTicks()
@@ -262,7 +273,7 @@ export function registerPtyConnectionSessionLivenessTests(): void {
           paneTransportsRef: { current: new Map([[1, createMockTransport('pty-pane-1')]]) }
         })
 
-        const binding = connectPanePty(createPane(2) as never, manager as never, deps as never)
+        const binding = connectPanePty(...mockPanePtyArgs(createPane(2), manager, deps))
 
         binding.reconcileIfSessionMissing(async () => false)
         await flushAsyncTicks()
@@ -282,7 +293,7 @@ export function registerPtyConnectionSessionLivenessTests(): void {
           paneTransportsRef: { current: new Map([[1, createMockTransport('pty-pane-1')]]) }
         })
 
-        const binding = connectPanePty(createPane(2) as never, manager as never, deps as never)
+        const binding = connectPanePty(...mockPanePtyArgs(createPane(2), manager, deps))
 
         binding.reconcileIfSessionMissing(async () => false)
         await flushAsyncTicks()
@@ -302,7 +313,7 @@ export function registerPtyConnectionSessionLivenessTests(): void {
           paneTransportsRef: { current: new Map([[1, createMockTransport('pty-pane-1')]]) }
         })
 
-        const binding = connectPanePty(createPane(2) as never, manager as never, deps as never)
+        const binding = connectPanePty(...mockPanePtyArgs(createPane(2), manager, deps))
 
         binding.reconcileIfSessionMissing(async () => false)
         await flushAsyncTicks()
@@ -336,7 +347,7 @@ export function registerPtyConnectionSessionLivenessTests(): void {
           paneTransportsRef: { current: new Map([[1, createMockTransport('pty-pane-1')]]) }
         })
 
-        connectPanePty(createPane(2) as never, manager as never, deps as never)
+        connectPanePty(...mockPanePtyArgs(createPane(2), manager, deps))
         capturedDataCallback.current?.('shell prompt')
         const onPtyExit = createdTransportOptions[0]?.onPtyExit as
           | ((ptyId: string) => void)
@@ -349,11 +360,13 @@ export function registerPtyConnectionSessionLivenessTests(): void {
         // Restart rebinds the pane to a new live PTY; its later real exit must not be ignored by a stale guard.
         transport.getPtyId.mockReturnValue('pty-pane-2-restarted')
         onPtyExit?.('pty-pane-2-restarted')
-        // A switch-on build closes it on main's answer.
-        await layoutApplyTestTransport.settle()
 
-        expect(manager.closePane).toHaveBeenCalledTimes(1)
-        expect(manager.closePane).toHaveBeenCalledWith(2)
+        if (ORCA_LAYOUT_OWNER_IS_MAIN) {
+          await expectMainFrameClosesExitedSplitPaneOnce(manager)
+        } else {
+          expect(manager.closePane).toHaveBeenCalledTimes(1)
+          expect(manager.closePane).toHaveBeenCalledWith(2)
+        }
       })
 
       it('closes a split pane exactly once across reconcile + a racing real exit', async () => {
@@ -373,7 +386,7 @@ export function registerPtyConnectionSessionLivenessTests(): void {
           paneTransportsRef: { current: new Map([[1, createMockTransport('pty-pane-1')]]) }
         })
 
-        const binding = connectPanePty(createPane(2) as never, manager as never, deps as never)
+        const binding = connectPanePty(...mockPanePtyArgs(createPane(2), manager, deps))
         capturedDataCallback.current?.('shell prompt')
         const onPtyExit = createdTransportOptions[0]?.onPtyExit as
           | ((ptyId: string) => void)
@@ -385,8 +398,14 @@ export function registerPtyConnectionSessionLivenessTests(): void {
         // A racing real/synthetic pty:exit for the SAME id must not close twice.
         onPtyExit?.('pty-pane-2')
 
-        expect(manager.closePane).toHaveBeenCalledTimes(1)
-        expect(manager.closePane).toHaveBeenCalledWith(2)
+        if (ORCA_LAYOUT_OWNER_IS_MAIN) {
+          // The racing exit must not re-run the teardown that registered main's close.
+          expect(deps.clearExitedPanePtyLayoutBinding).toHaveBeenCalledTimes(1)
+          await expectMainFrameClosesExitedSplitPaneOnce(manager)
+        } else {
+          expect(manager.closePane).toHaveBeenCalledTimes(1)
+          expect(manager.closePane).toHaveBeenCalledWith(2)
+        }
       })
 
       it('closes a genuinely-dead non-suppressed pane once (not misread as suppressed)', async () => {
@@ -408,7 +427,7 @@ export function registerPtyConnectionSessionLivenessTests(): void {
           paneTransportsRef: { current: new Map([[1, createMockTransport('pty-pane-1')]]) }
         })
 
-        const binding = connectPanePty(createPane(2) as never, manager as never, deps as never)
+        const binding = connectPanePty(...mockPanePtyArgs(createPane(2), manager, deps))
         capturedDataCallback.current?.('shell prompt')
         const onPtyExit = createdTransportOptions[0]?.onPtyExit as
           | ((ptyId: string) => void)
@@ -419,8 +438,13 @@ export function registerPtyConnectionSessionLivenessTests(): void {
         onPtyExit?.('pty-pane-2')
 
         // Observable outcome: single close, pane was treated as dead (closed).
-        expect(manager.closePane).toHaveBeenCalledTimes(1)
-        expect(manager.closePane).toHaveBeenCalledWith(2)
+        if (ORCA_LAYOUT_OWNER_IS_MAIN) {
+          expect(deps.clearExitedPanePtyLayoutBinding).toHaveBeenCalledTimes(1)
+          await expectMainFrameClosesExitedSplitPaneOnce(manager)
+        } else {
+          expect(manager.closePane).toHaveBeenCalledTimes(1)
+          expect(manager.closePane).toHaveBeenCalledWith(2)
+        }
       })
     })
 
@@ -434,7 +458,7 @@ export function registerPtyConnectionSessionLivenessTests(): void {
       transportFactoryQueue.push(transport)
       const deps = seedUnverifiableRestoredPane()
 
-      connectPanePty(createPane(2) as never, createManager(2) as never, deps as never)
+      connectPanePty(...mockPanePtyArgs(createPane(2), createManager(2), deps))
       await flushAsyncTicks()
 
       expect(transport.connect).toHaveBeenCalledTimes(1)
@@ -456,7 +480,7 @@ export function registerPtyConnectionSessionLivenessTests(): void {
       transportFactoryQueue.push(transport)
       const deps = seedUnverifiableRestoredPane()
 
-      connectPanePty(createPane(2) as never, createManager(2) as never, deps as never)
+      connectPanePty(...mockPanePtyArgs(createPane(2), createManager(2), deps))
       await flushAsyncTicks()
 
       expect(transport.connect).toHaveBeenCalledTimes(1)
@@ -483,7 +507,7 @@ export function registerPtyConnectionSessionLivenessTests(): void {
         const cleared = vi.fn()
         deps.onPtyErrorClearedRef = { current: cleared }
 
-        connectPanePty(createPane(2) as never, createManager(2) as never, deps as never)
+        connectPanePty(...mockPanePtyArgs(createPane(2), createManager(2), deps))
         await flushAsyncTicks()
 
         expect(transport.connect).toHaveBeenCalledTimes(1)
@@ -534,14 +558,7 @@ export function registerPtyConnectionSessionLivenessTests(): void {
           paneTransportsRef: { current: new Map([[1, createMockTransport('pty-pane-1')]]) }
         })
         const pane = createPane(2)
-        // oxlint-disable-next-line typescript/consistent-type-assertions -- SAFETY: The real PanePtyBinding exposes noteVisibilityResume; this fixture narrows it to that method.
-        const binding = connectPanePty(
-          pane as never,
-          manager as never,
-          deps as never
-        ) as unknown as {
-          noteVisibilityResume: () => void
-        }
+        const binding = connectPanePty(...mockPanePtyArgs(pane, manager, deps))
         return {
           binding,
           transport,

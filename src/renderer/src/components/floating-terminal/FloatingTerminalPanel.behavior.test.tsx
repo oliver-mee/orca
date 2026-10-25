@@ -1,15 +1,24 @@
+import type * as ReactModule from 'react'
 import { vi } from 'vitest'
 import './FloatingTerminalPanel.bounds.spec'
 import './FloatingTerminalPanel.focus.spec'
 import './FloatingTerminalPanel.shortcuts.spec'
 import './FloatingTerminalPanel.tab-lifecycle.spec'
 
+// Why: the specs read the stubbed window's listeners in place of the app keyboard router's stage.
+vi.mock('@/lib/app-keyboard-router', () => ({
+  addAppKeyListener: (type: 'keydown' | 'keyup', handler: (e: KeyboardEvent) => void) =>
+    window.addEventListener(type, handler, { capture: true }),
+  removeAppKeyListener: (type: 'keydown' | 'keyup', handler: (e: KeyboardEvent) => void) =>
+    window.removeEventListener(type, handler, { capture: true })
+}))
+
 vi.mock('zustand/react/shallow', () => ({
   // Why: zustand resolves the real react (unmocked in node_modules); the memo wrapper is inert here.
   useShallow: (selector: unknown) => selector
 }))
 vi.mock('react', async () => {
-  const actual = await vi.importActual<typeof import('react')>('react') // eslint-disable-line @typescript-eslint/consistent-type-imports -- vi.importActual requires inline import()
+  const actual = await vi.importActual<typeof ReactModule>('react')
   const { createReactHookOverrides } = await import('./floating-terminal-panel-test-module-mocks')
   return { ...actual, ...createReactHookOverrides() }
 })

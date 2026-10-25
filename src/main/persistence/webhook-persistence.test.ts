@@ -7,7 +7,7 @@ import {
   createStore,
   testState,
   readPersistedStateJson
-} from '../persistence-test-harness'
+} from './persistence-test-harness'
 import type { Repo } from '../../shared/repo-types'
 
 vi.mock('electron', () => ({

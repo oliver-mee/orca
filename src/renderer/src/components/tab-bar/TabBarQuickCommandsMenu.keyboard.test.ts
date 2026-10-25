@@ -1,3 +1,4 @@
+import type * as ReactModule from 'react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 // Capture window keydown listeners so tests can fire them directly.
@@ -25,7 +26,7 @@ const reactRuntime = vi.hoisted(() => ({
 }))
 
 vi.mock('react', async () => {
-  const actual = await vi.importActual<typeof import('react')>('react') // eslint-disable-line @typescript-eslint/consistent-type-imports -- vi.importActual requires inline import()
+  const actual = await vi.importActual<typeof ReactModule>('react')
   return {
     ...actual,
     useState<T>(initial: T | (() => T)) {
@@ -56,6 +57,14 @@ vi.mock('react', async () => {
 
 vi.mock('../../../../shared/keybindings', () => ({
   keybindingMatchesAction: keybindingsMock.matchAction
+}))
+
+// Why: the stubbed window stands in for the app keyboard router's capture stage.
+vi.mock('@/lib/app-keyboard-router', () => ({
+  addAppKeyListener: (type: 'keydown' | 'keyup', handler: (e: KeyboardEvent) => void) =>
+    window.addEventListener(type, handler, { capture: true }),
+  removeAppKeyListener: (type: 'keydown' | 'keyup', handler: (e: KeyboardEvent) => void) =>
+    window.removeEventListener(type, handler, { capture: true })
 }))
 
 vi.mock('@/lib/shortcut-platform', () => ({
@@ -165,7 +174,7 @@ beforeEach(() => {
   appStoreMock.state.keybindings = {}
   appStoreMock.state.settings.terminalShortcutPolicy = 'orca-first'
   vi.stubGlobal('window', {
-    addEventListener: vi.fn((type: string, handler: (e: KeyboardEvent) => void) => {
+    addEventListener: vi.fn((type: 'keydown' | 'keyup', handler: (e: KeyboardEvent) => void) => {
       windowListeners.set(type, handler)
     }),
     removeEventListener: vi.fn()

@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   DORMANT_AUTOMATION,
   DORMANT_AUTOMATION_RUN
-} from '../../persistence-orcad-migration-catalog-fixture'
+} from './persistence-orcad-migration-catalog-fixture'
 import {
   parseOrcadMigrationDormantAutomations,
   parseOrcadMigrationDormantAutomationRuns

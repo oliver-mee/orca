@@ -1,8 +1,5 @@
 import { bindAutomationWebhookLifecycle } from '../webhooks/automation-webhook-lifecycle'
-/**
- * The AutomationService a runtime host executes schedules with. Shared by Electron startup and
- * orcad so both hosts dispatch through the same headless path.
- */
+
 import type { ClaudeUsageStore } from '../claude-usage/store'
 import type { CodexUsageStore } from '../codex-usage/store'
 import type { Store } from '../persistence'
@@ -24,11 +21,11 @@ export function createRuntimeAutomationService(input: {
   runtime: OrcaRuntimeService
   claudeUsage?: ClaudeUsageStore
   codexUsage?: CodexUsageStore
-  /** A server process: it executes remote_host_service-owned schedules and dispatches headlessly. */
+  /** Execute remote_host_service schedules through the headless dispatcher. */
   headless: boolean
 }): AutomationService {
   const { store, runtime, claudeUsage, codexUsage } = input
-  // The handle each headless launch returned, so its watcher never depends on a pane-key lookup.
+  // Launch handles remain usable before pane-key lookup resolves.
   const launchedHandles = new Map<string, string>()
   const observer = createRuntimeAutomationRunTerminalObserver(runtime, {
     getAgentStatusRowsForPane: (paneKey) => runtime.getAgentStatusRowsForPane(paneKey),
@@ -42,7 +39,6 @@ export function createRuntimeAutomationService(input: {
     codexUsage,
     terminalObserver: {
       ...observer,
-      // This host's own launch handle first: it names the run's terminal without a lookup.
       resolveRunTerminal: (run) =>
         (run.terminalPaneKey ? launchedHandles.get(run.terminalPaneKey) : undefined) ??
         observer.resolveRunTerminal(run)
@@ -61,7 +57,7 @@ export function createRuntimeAutomationService(input: {
               launchedHandles.delete(launchedHandles.keys().next().value ?? '')
             }
           }
-          // No completion: the run's watcher observes it, retrying wait timeouts until it settles.
+          // Let the watcher retry wait timeouts until completion or its observation deadline.
           return launch
         }
       : undefined
@@ -74,7 +70,6 @@ export function createRuntimeAutomationService(input: {
   return service
 }
 
-/** A headless host has no renderer to close finished run terminals; its service does it. */
 function bindHeadlessRunTerminalRetention(
   service: AutomationService,
   store: Store,
@@ -90,16 +85,15 @@ function bindHeadlessRunTerminalRetention(
         ? runtime.confirmTerminalShellAlone(run.terminalPtyId)
         : Promise.resolve(false),
     closeRunTerminal: async (run) => {
-      // Only the run's own process: a restarted pane holds a new PTY a user may be working in.
       const handle = runOwnHandle(runtime, run)
       if (!handle) {
         return false
       }
-      // The run's pane only: a pane a user split into the same tab is theirs.
+      // Preserve user-created splits in the same tab.
       await runtime.closeTerminal(handle)
       return true
     },
-    // Why: only a workspace made for this run sleeps; a shared one would gather a tab per run.
+    // Shared workspaces must close run panes rather than accumulate sleeping tabs.
     runOwnsWorkspace: (run) =>
       run.workspaceId !== null &&
       store.getWorktreeMeta(run.workspaceId)?.automationProvenance?.automationRunId === run.id,
@@ -109,12 +103,11 @@ function bindHeadlessRunTerminalRetention(
         return false
       }
       try {
-        // Records the agent's resume for reopening; sole, since any other live terminal is a user's.
+        // Sleep only this PTY, preserving other live terminals and the agent resume state.
         const sleep = await runtime.sleepTerminalsForWorktree(`id:${run.workspaceId}`, {
           soleLivePtyId: ptyId
         })
-        // Why "nothing live" too: retrying a sleep that stopped the PTY and then threw finds none;
-        // a decline always reports the other live terminal.
+        // A retry may find no live PTYs if an earlier sleep stopped the process before failing.
         const slept =
           sleep.livePtyIds.length === 0 ||
           (sleep.stoppedPtyIds.includes(ptyId) && !sleep.remainingLivePtyIds?.includes(ptyId))
@@ -125,14 +118,14 @@ function bindHeadlessRunTerminalRetention(
         console.error('[automations] could not sleep a run workspace:', error)
         return false
       }
-      // The slept pane keeps its tab and pane key, which reopen and resume it.
+      // Preserve tab and pane keys for resuming the slept agent.
       await service.markDispatchResult({ runId: run.id, status: run.status, terminalPtyId: null })
       return true
     },
     inAutomationLane: (automationId, operation) =>
       service.runInAutomationLane(automationId, operation),
     forgetRunTerminal: async (run) => {
-      // A run still dispatched had its agent exit without a result, proven by its idle shell.
+      // An idle shell proves a dispatched run exited without a completion result.
       const unfinished = run.status === 'dispatched'
       await service.markDispatchResult({
         runId: run.id,
