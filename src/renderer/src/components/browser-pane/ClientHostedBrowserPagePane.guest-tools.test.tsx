@@ -113,6 +113,7 @@ function renderPane(overrides: Partial<PaneProps> = {}) {
     canGoForward: () => false,
     getWebContentsId: () => 42,
     getZoomLevel: () => 0,
+    stop: vi.fn(),
     focus: vi.fn(),
     blur: vi.fn()
   })
@@ -151,6 +152,14 @@ function toolButton(name: string): HTMLButtonElement {
 const annotateButton = (): HTMLButtonElement => toolButton('Annotate page element')
 
 describe('client-hosted page annotations', () => {
+  it('keeps the Stop button and stops the guest while loading', () => {
+    const { webview } = renderPane({ browserTab: { ...basePage, loading: true } })
+    const stop = toolButton('Stop')
+    expect(stop.querySelector('.lucide-x')).not.toBeNull()
+    fireEvent.click(stop)
+    expect(webview.stop).toHaveBeenCalledOnce()
+  })
+
   it('offers Grab and Annotate on a placed page', () => {
     renderPane()
     expect(toolButton('Grab page element').disabled).toBe(false)
