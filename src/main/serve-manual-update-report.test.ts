@@ -19,7 +19,6 @@ const {
 }))
 
 vi.mock('electron', () => ({ app: appMock }))
-vi.mock('@electron-toolkit/utils', () => ({ is: { dev: false } }))
 vi.mock('./linux-update-package-type', () => ({
   getLinuxRootPackageType: getLinuxRootPackageTypeMock,
   isExternallyManagedLinuxInstall: isExternallyManagedLinuxInstallMock

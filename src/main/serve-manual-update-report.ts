@@ -1,5 +1,4 @@
 import { app } from 'electron'
-import { is } from '@electron-toolkit/utils'
 import type {
   RemoteServerUpdateInstallMode,
   ServeManualUpdateCheckState,
@@ -192,7 +191,7 @@ export function startServeManualUpdateReporting(options: {
     reportState.check = 'disabled'
     return Promise.resolve()
   }
-  if (!app.isPackaged || is.dev) {
+  if (!app.isPackaged) {
     // Why: an unpackaged host has no release to compare against; report the method and stop.
     reportState.check = 'unavailable'
     return Promise.resolve()

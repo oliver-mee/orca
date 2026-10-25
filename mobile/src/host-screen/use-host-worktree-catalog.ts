@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef } from 'react'
+import { AppState } from 'react-native'
 import { ORCA_SIDEBAR_INPUTS_IS_MAIN } from '../../../src/shared/sidebar-inputs-switch'
 import { useFocusEffect } from 'expo-router'
 import { setCachedWorktrees } from '../cache/worktree-cache'
@@ -7,7 +8,7 @@ import type { ConnectionState } from '../transport/types'
 import { RpcIncompatibleReplyError } from '../transport/rpc-incompatible-reply-error'
 import { useWorktreeResync } from '../transport/use-worktree-resync'
 import { startHostWorktreeRefresh } from '../worktree/host-worktree-refresh'
-import type { HostSidebarFeedTriggers } from './host-sidebar-feed-reader'
+import type { HostSidebarFeedTriggers } from './host-sidebar-feed-connection'
 import { areWorktreeListsEqual } from '../worktree/worktree-list-snapshot'
 import {
   clearConfirmedActiveWorktreeIdentity,
@@ -217,7 +218,8 @@ export function useHostWorktreeCatalog(args: {
       fetchWorktrees,
       fetchRepoMetadata,
       syncViewSettings: syncViewSettingsFromDesktop,
-      sidebarFeed
+      sidebarFeed,
+      appState: AppState
     })
   }, [
     client,
